@@ -1,12 +1,16 @@
 # Python Aperture Photometry Pipeline: Comprehensive User Manual
 
-Welcome to the **StarID** pipeline, a professional-grade astronomical image analysis suite. This manual provides a deep dive into the software's architecture, mathematical principles, and operational workflow. Whether you are performing high-cadence variable star photometry or calibrating a new sensor, this guide outlines everything from raw star detection to zero-point calibrated magnitudes.
+Welcome to the **StarID** pipeline, an astronomical image analysis suite. This short manual provides some background on the software's architecture, mathematical principles, and operational workflow. 
+The code can identify stars, perform PSF fitting to extract fluxes (using aperture photometry), and compares instrumental magnitudes with refernces magnitudes from catalogues available online (e.g. APASS DR9). 
+Make sure that the code uses the right filter. I use Johnson V and B filters, that are labled 'V_mag' and 'B_mag' by my imaging software - I use N.I.N.A. - in the FITS header.
+Future development will be towards using pictures of reference regions taken with both the V and the B filter, and have the code analysze both to extract transformation coeeficients.
+Useful background information on the latter and lots of other useful information is provided by the AAVSO Guide to CCD/CMOS Photometry (available for free via aavso.org).
 
 ---
 
 ## 1. Overview & Core Philosophy
 
-This pipeline moves beyond simple centroiding, utilizing industry-standard algorithms and mathematical modeling to ensure sub-pixel accuracy and rigorous error propagation. It is designed to handle batch processing of FITS images while giving the user granular control via an interactive GUI.
+This pipeline utilizise standard algorithms and mathematical modeling to ensure sub-pixel accuracy and rigorous error propagation. It is designed to handle batch processing of FITS images while giving the user granular control via an interactive GUI.
 
 ### Key Mathematical Principles
 *   **Exact Fractional Integration**: We use the `photutils` library with `method='exact'`, which calculates the precise overlap between circular boundaries and the square pixel grid. This avoids rounding errors common in simpler "center-point" inclusion models.
@@ -42,12 +46,12 @@ $$\sigma_{flux}^2 = \frac{Flux}{Gain} + Area_{ap} \cdot \sigma_{bg}^2 + \frac{Ar
 
 ---
 
-## 3. The Processing Pipeline (The 6 Stages)
+## 3. The Processing Pipeline (6 Stages: A-F)
 
 The pipeline processes each FITS file through six sequential modules:
 
 ### Stage A: Star Detection (`star_detection.py`)
-Uses `DAOStarFinder` to scan for density peaks matching a stellar profile. It enforces strict morphological constraints (Sharpness and Roundness) to prevent hot pixels or satellite trails from being flagged as stars.
+Uses `DAOStarFinder` to scan for density peaks matching a stellar profile. It enforces morphological constraints (Sharpness and Roundness) to prevent hot pixels or satellite trails from being flagged as stars.
 
 ### Stage B: Coordinate Refinement (`psf_fitting.py`)
 Isolates every detected star and fits the 2D Gaussian. 
