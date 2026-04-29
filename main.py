@@ -2,6 +2,8 @@ import glob
 import os
 import numpy as np
 from astropy.io import fits
+from astropy.coordinates import SkyCoord
+import astropy.units as u
 
 from photometry.star_detection import detect_stars
 from photometry.psf_fitting import refine_coordinates_psf
@@ -28,7 +30,33 @@ def process_file(fits_filename, config):
         exptime = header.get('EXPTIME', 1.0)
         hdr_gain = header.get('GAIN', 'Unknown')
         hdr_offset = header.get('OFFSET', header.get('BLKLEVEL', 'Unknown'))
+        
+        # Extract RA/Dec for online catalog query
+        ra_val = header.get('RA')
+        dec_val = header.get('DEC')
+        
+        # Fallback to OBJCTRA/DEC if RA/DEC not found
+        if ra_val is None: ra_val = header.get('OBJCTRA')
+        if dec_val is None: dec_val = header.get('OBJCTDEC')
+        
+        # Convert to float if they are strings (e.g. HH MM SS)
+        center_ra = None
+        center_dec = None
+        if ra_val is not None and dec_val is not None:
+            try:
+                if isinstance(ra_val, str) and (':' in ra_val or ' ' in ra_val):
+                    c = SkyCoord(ra=ra_val, dec=dec_val, unit=(u.hourangle, u.deg))
+                    center_ra = c.ra.deg
+                    center_dec = c.dec.deg
+                else:
+                    center_ra = float(ra_val)
+                    center_dec = float(dec_val)
+            except Exception as e:
+                print(f"Warning: Could not parse RA/Dec from header: {e}")
+
         print(f"FITS Header Check -> EXPTIME: {exptime}s | GAIN: {hdr_gain} | OFFSET: {hdr_offset}")
+        if center_ra is not None:
+            print(f"Center Coordinates: RA={center_ra:.4f}, Dec={center_dec:.4f}")
 
     except FileNotFoundError:
         print(f"Error: {fits_filename} not found.")
@@ -79,7 +107,10 @@ def process_file(fits_filename, config):
     output_report = os.path.join('photometry_output', f'calibration_report_{base_name}.md')
     match_and_calibrate(results, config['reference_catalog'], filter_name, config['match_tolerance_arcsec'],
                         default_zp=config['default_zero_point'], run_new_calibration=config['run_new_calibration'],
-                        output_report=output_report)
+                        output_report=output_report, center_ra=center_ra, center_dec=center_dec,
+                        snr_threshold=config['calib_snr_threshold'],
+                        print_to_console=config['print_detailed_calibration'])
+
 
     # Calculate Detection Limits
     if len(results) > 0:
@@ -133,7 +164,15 @@ def process_file(fits_filename, config):
     if config['run_shift_analysis']:
         output_md = os.path.join('photometry_output', f'shift_analysis_{base_name}.md')
         print(f"Generating shift analysis report at {output_md}...")
-        generate_shift_report(results, config['reference_catalog'], header, config['match_tolerance_arcsec'], output_md)
+        shift_stats = generate_shift_report(results, config['reference_catalog'], header, config['match_tolerance_arcsec'], output_md,
+                                            center_ra=center_ra, center_dec=center_dec)
+        
+        if shift_stats:
+            print("\n--- Positional Shift Summary (Detected - Reference) ---")
+            print(f"Matched Stars: {shift_stats['count']}")
+            print(f"Median Shift (Pixels): dX={shift_stats['med_dx']:+.2f} | dY={shift_stats['med_dy']:+.2f}")
+            print(f"Median Shift (Arcsec): dRA={shift_stats['med_dra']:+.2f} | dDec={shift_stats['med_ddec']:+.2f}")
+            print("-------------------------------------------------------\n")
 
     print("Done!\n")
 

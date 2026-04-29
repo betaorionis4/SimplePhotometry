@@ -8,13 +8,13 @@
 ## Quick Start
 1.  **Installation**:
     ```bash
-    pip install numpy matplotlib astropy photutils
+    pip install numpy matplotlib astropy photutils astroquery
     ```
 2.  **Run**:
     ```bash
     python main.py
     ```
-    This launches the **Configuration GUI** where you can set your CCD parameters and file paths.
+    This launches the **Configuration GUI** where you can set your CCD parameters and file paths. The pipeline now supports **Automated Online Calibration** via ATLAS and APASS.
 
 ---
 

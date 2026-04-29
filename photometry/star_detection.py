@@ -23,9 +23,10 @@ def detect_stars(image_data, header, detect_sigma,
     print(f"Global Image Stats: Median Bkg = {median_bg:.1f} ADU | Noise Sigma = {std_bg:.1f} ADU")
     
     # Initialize DAOStarFinder with user-defined morphology limits
+    # Updated to use sharpness_range and roundness_range to avoid DeprecationWarnings
     daofind = DAOStarFinder(fwhm=3.5, threshold=detect_sigma * std_bg,
-                            sharplo=sharplo, sharphi=sharphi, 
-                            roundlo=roundlo, roundhi=roundhi)
+                            sharpness_range=(sharplo, sharphi), 
+                            roundness_range=(roundlo, roundhi))
     sources = daofind(image_data - median_bg)
 
     if sources is None:
@@ -54,8 +55,9 @@ def detect_stars(image_data, header, detect_sigma,
 
     valid_count = 0
     for row in sources:
-        fits_x = row['xcentroid'] + 1.0
-        fits_y = row['ycentroid'] + 1.0
+        # Using modern column names x_centroid and y_centroid
+        fits_x = row['x_centroid'] + 1.0
+        fits_y = row['y_centroid'] + 1.0
         peak_val = row['peak']
         flux_val = row['flux']
 

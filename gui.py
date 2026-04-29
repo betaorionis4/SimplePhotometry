@@ -58,7 +58,20 @@ def run_config_gui():
     lf_files = ttk.LabelFrame(tab_io, text="Files")
     lf_files.pack(fill="x", padx=10, pady=10)
     add_entry(lf_files, "Input Pattern:", "input_pattern", os.path.join('fitsfiles', '*.fits'), 0, vtype=str)
-    add_entry(lf_files, "Ref Catalog:", "reference_catalog", os.path.join('photometry_refstars', 'reference_stars.csv'), 1, vtype=str)
+    
+    ttk.Label(lf_files, text="Ref Catalog:").grid(row=1, column=0, sticky=tk.W, padx=10, pady=5)
+    cat_var = tk.StringVar(value="ATLAS")
+    vars_dict["reference_catalog"] = (cat_var, str)
+    cat_cb = ttk.Combobox(lf_files, textvariable=cat_var, values=["ATLAS", "APASS", os.path.join('photometry_refstars', 'reference_stars.csv')], width=35)
+    cat_cb.grid(row=1, column=1, sticky=tk.W, padx=10, pady=5)
+    
+    def browse_catalog():
+        from tkinter import filedialog
+        filename = filedialog.askopenfilename(initialdir="photometry_refstars", title="Select Reference Catalog", filetypes=(("CSV files", "*.csv"), ("all files", "*.*")))
+        if filename:
+            cat_var.set(filename)
+            
+    ttk.Button(lf_files, text="Browse...", command=browse_catalog).grid(row=1, column=2, padx=5)
 
     # Filtering
     lf_filt = ttk.LabelFrame(tab_io, text="Region Filtering")
@@ -112,8 +125,9 @@ def run_config_gui():
     lf_cal.pack(fill="x", padx=10, pady=10)
     add_entry(lf_cal, "Match Tolerance (arcsec):", "match_tolerance_arcsec", 8.0, 0)
     add_entry(lf_cal, "Default Zero Point:", "default_zero_point", 23.399, 1)
-    add_check(lf_cal, "Run New ZP Calibration (Overwrite Default)", "run_new_calibration", False, 2)
-    add_check(lf_cal, "Run Positional Shift Analysis", "run_shift_analysis", True, 3)
+    add_entry(lf_cal, "Min SNR for Calib:", "calib_snr_threshold", 10.0, 2)
+    add_check(lf_cal, "Run New ZP Calibration (Overwrite Default)", "run_new_calibration", False, 3)
+    add_check(lf_cal, "Run Positional Shift Analysis", "run_shift_analysis", True, 4)
 
     # --- TAB 4: Output & Displays ---
     tab_out = ttk.Frame(notebook)
@@ -121,10 +135,11 @@ def run_config_gui():
 
     lf_out = ttk.LabelFrame(tab_out, text="Console & Plot Toggles")
     lf_out.pack(fill="x", padx=10, pady=10)
-    add_check(lf_out, "Print Massive Aperture Photometry Table", "print_star_detection_table", False, 0)
-    add_check(lf_out, "Print Individual PSF Fitting Results", "print_psf_fitting", False, 1)
-    add_check(lf_out, "Display Matplotlib Plots (Blocking)", "display_plots", False, 2)
-    add_entry(lf_out, "Max Plots to Show/Save per file:", "max_plots_to_show_per_file", 3, 3, vtype=int)
+    add_check(lf_out, "Print Detailed Calibration to Console", "print_detailed_calibration", False, 0)
+    add_check(lf_out, "Print Massive Aperture Photometry Table", "print_star_detection_table", False, 1)
+    add_check(lf_out, "Print Individual PSF Fitting Results", "print_psf_fitting", False, 2)
+    add_check(lf_out, "Display Matplotlib Plots (Blocking)", "display_plots", False, 3)
+    add_entry(lf_out, "Max Plots to Show/Save per file:", "max_plots_to_show_per_file", 3, 4, vtype=int)
 
     def on_run():
         nonlocal config
