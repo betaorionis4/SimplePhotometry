@@ -34,13 +34,14 @@ def generate_shift_report(results, ref_catalog_file, header, tolerance_arcsec, o
     det_valid = []
     for rs in results:
         if 'ra_deg' in rs and rs['ra_deg'] != "" and 'refined_x' in rs:
-            det_valid.append({
-                'id': rs['id'],
-                'x': float(rs['refined_x']),
-                'y': float(rs['refined_y']),
-                'ra': float(rs['ra_deg']),
-                'dec': float(rs['dec_deg'])
-            })
+            if not rs.get('saturated', False):
+                det_valid.append({
+                    'id': rs['id'],
+                    'x': float(rs['refined_x']),
+                    'y': float(rs['refined_y']),
+                    'ra': float(rs['ra_deg']),
+                    'dec': float(rs['dec_deg'])
+                })
             
     if not det_valid:
         return

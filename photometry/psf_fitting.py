@@ -38,7 +38,9 @@ def refine_coordinates_psf(image_data, results, box_size, aperture_radius, satur
             bg_guess = np.median(stamp)
             amp_guess = np.max(stamp) - bg_guess
             peak_adu = np.max(stamp)
-            sat_status = "SATURATED!" if peak_adu > saturation_limit else "OK"
+            is_saturated = peak_adu > saturation_limit
+            rs['saturated'] = is_saturated
+            sat_status = "SATURATED!" if is_saturated else "OK"
 
             g_init = models.Gaussian2D(amplitude=amp_guess, x_mean=cx, y_mean=cy, x_stddev=2.0, y_stddev=2.0)
             data_to_fit = stamp - bg_guess

@@ -272,9 +272,9 @@ def match_and_calibrate(results, ref_catalog_file, filter_name, tolerance_arcsec
     det_ra = []
     det_dec = []
     for rs in results:
-        # NEW: Filter by SNR threshold for calibration
+        # NEW: Filter by SNR threshold AND saturation for calibration
         if 'ra_deg' in rs and 'dec_deg' in rs and rs['ra_deg'] != "" and not np.isnan(rs.get('mag_inst', np.nan)):
-            if rs.get('snr', 0) >= snr_threshold:
+            if rs.get('snr', 0) >= snr_threshold and not rs.get('saturated', False):
                 det_valid.append(rs)
                 det_ra.append(float(rs['ra_deg']))
                 det_dec.append(float(rs['dec_deg']))
