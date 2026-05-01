@@ -167,7 +167,7 @@ def process_file(fits_filename, config):
             'id', 'raw_x', 'raw_y', 'refined_x', 'refined_y', 
             'ra_deg', 'dec_deg', 'ra_hms', 'dec_dms',
             'peak_adu', 'dao_flux', 'net_flux', 'flux_err', 'snr',
-            'mag_inst', 'mag_inst_err', 'mag_calibrated', 'mag_calibrated_err'
+            'mag_inst', 'mag_inst_err', 'mag_calibrated', 'mag_calibrated_err', 'airmass'
         ]
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -191,7 +191,8 @@ def process_file(fits_filename, config):
                 'mag_inst': f"{rs.get('mag_inst', 0):.3f}" if 'mag_inst' in rs and not np.isnan(rs['mag_inst']) else "",
                 'mag_inst_err': f"{rs.get('mag_inst_err', 0):.3f}" if 'mag_inst_err' in rs and not np.isnan(rs['mag_inst_err']) else "",
                 'mag_calibrated': f"{rs.get('mag_calibrated', 0):.3f}" if 'mag_calibrated' in rs and not np.isnan(rs['mag_calibrated']) else "",
-                'mag_calibrated_err': f"{rs.get('mag_calibrated_err', 0):.3f}" if 'mag_calibrated_err' in rs and not np.isnan(rs['mag_calibrated_err']) else ""
+                'mag_calibrated_err': f"{rs.get('mag_calibrated_err', 0):.3f}" if 'mag_calibrated_err' in rs and not np.isnan(rs['mag_calibrated_err']) else "",
+                'airmass': f"{header.get('AIRMASS', 1.0):.4f}"
             })
 
     # 6. Shift Analysis
@@ -212,6 +213,7 @@ def process_file(fits_filename, config):
     print("Done!\n")
     if hasattr(sys.stdout, 'set_log_file'):
         sys.stdout.set_log_file(None)
+    return output_csv, filt
 
 def run_pipeline(cfg):
     input_pattern = cfg['input_pattern']
@@ -223,12 +225,16 @@ def run_pipeline(cfg):
     else:
         files_to_process = glob.glob(input_pattern)
 
+    processed_results = []
     if not files_to_process:
         print(f"No files found matching pattern: {input_pattern}")
     else:
         print(f"Found {len(files_to_process)} file(s) to process.")
         for f in files_to_process:
-            process_file(f, cfg)
+            res = process_file(f, cfg)
+            if res:
+                processed_results.append(res)
+    return processed_results
 
 def main():
     # run_config_gui now handles its own loop and calls run_pipeline in a thread

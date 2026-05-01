@@ -126,6 +126,22 @@ Computes the difference between where the FITS header (WCS) *thinks* the star is
 - **Console Summary**: Provides a quick median shift report (dX, dY, dRA, dDec) on screen.
 - **Detailed Report**: Generates a full markdown report detailing individual tracking errors and rotational shifts.
 
+### Stage G: Color Transformation Calibration (`color_calibration.py`)
+A specialized post-processing tool for deriving instrumental **Color Terms**. 
+- **Requirements**: Requires a B-filter result CSV and a V-filter result CSV of the same field.
+- **Airmass & Extinction**: Automatically handles airmass extraction from results and applies atmospheric extinction correction ($k_B, k_V$).
+- **Robust Iterative Fitting**: 
+    - Applies a **2-sigma outlier rejection** algorithm. 
+    - First pass calculates the initial spread; second pass performs a high-precision regression on the cleaned data.
+- **Visual Diagnostics**:
+    - **Red 'X'**: Outliers that were statistically rejected.
+    - **Red Dotted Lines**: The initial 2-sigma boundary of the raw data.
+    - **Grey Shaded Corridor**: The final, refined 2-sigma confidence window.
+- **Coefficients Derived**:
+    - **$\mu$ (Color Scale)**: Transformation from $(b-v)$ to $(B-V)_{std}$.
+    - **$\psi$ & $\epsilon$**: Color terms for B and V filters respectively.
+- **Reporting**: Generates a regression report and three diagnostic plots showing color residuals and the statistical cleaning process.
+
 ---
 
 ## 4. Running the Pipeline: The Configuration GUI
@@ -138,9 +154,12 @@ Launch the pipeline via `python main.py` to open the **Configuration GUI**.
     - Set your aperture radii (rule of thumb: $\approx 2 \times FWHM$).
     - Select your **Ref Catalog**: Choose **ATLAS** (ATLAS-RefCat2), **APASS** (DR9), or **GAIA_DR3** for online calibration, or select a local CSV.
     - Set **Min SNR for Calib**: Filter out noisy stars from the zero-point calculation (default 10.0).
-4.  **Output Toggles Tab**: 
     - **Print Detailed Calibration**: Toggle the individual "Match" logs in the console. (Summary always shown).
     - Enable/disable diagnostic plots and massive data tables.
+5.  **Color Calibration Tab**: 
+    - **Auto-Hand-off**: After running a B and V image, these fields will auto-populate with the correct CSV paths.
+    - **Extinction Correction**: Enter or verify the k-coefficients ($k_B, k_V$) and airmass.
+    - Click **"Run Color Transformation Analysis"** to calculate your equipment's color terms.
 
 ---
 
