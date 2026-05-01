@@ -1,17 +1,37 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, scrolledtext
 import os
+import sys
+import threading
 
-def run_config_gui():
+class StdoutRedirector:
+    def __init__(self, text_widget):
+        self.text_widget = text_widget
+        self.log_file = None
+
+    def set_log_file(self, file_path):
+        self.log_file = file_path
+
+    def write(self, string):
+        self.text_widget.insert(tk.END, string)
+        self.text_widget.see(tk.END)
+        if self.log_file:
+            with open(self.log_file, "a", encoding="utf-8") as f:
+                f.write(string)
+
+    def flush(self):
+        pass
+
+def run_config_gui(pipeline_callback=None):
     """
-    Launches a Tkinter GUI for pipeline configuration.
-    Returns a dictionary of settings if "Run" is clicked, or None if closed/cancelled.
+    Launches a persistent Tkinter GUI for pipeline configuration.
+    pipeline_callback: A function that takes (config) and runs the analysis.
     """
     root = tk.Tk()
     root.title("Calibra: Automated Photometric Analysis & Calibration Toolkit")
-    root.geometry("720x660")
-    root.resizable(False, False)
-    root.configure(bg="#f0f2f5") # Light professional gray background
+    root.geometry("900x750")
+    root.resizable(True, True)
+    root.configure(bg="#f0f2f5") 
 
     # --- MODERN STYLING ---
     style = ttk.Style()
@@ -153,6 +173,37 @@ def run_config_gui():
     add_entry(lf_filt, "DEC Min:", "dec_min", "+43d00m00s", 6, col_offset=0, vtype=str)
     add_entry(lf_filt, "DEC Max:", "dec_max", "+43d30m00s", 6, col_offset=1, vtype=str)
 
+    # --- TAB 1.5: Pre-processing ---
+    tab_pre = ttk.Frame(notebook)
+    notebook.add(tab_pre, text="Pre-processing")
+    
+    lf_calib = ttk.LabelFrame(tab_pre, text="FITS Calibration (Bias & Flats)")
+    lf_calib.pack(fill="x", padx=10, pady=10)
+    
+    add_check(lf_calib, "Enable Pre-processing (Apply Bias/Flats)", "enable_calibration", False, 0)
+    
+    # Plate solving reminder
+    ttk.Label(lf_calib, text="* Note: Input FITS files must still be plate solved (contain WCS headers).", 
+              foreground="#a00", font=("Arial", 8, "italic")).grid(row=0, column=1, sticky=tk.W, padx=10)
+    
+    def add_file_selector(parent, label, var_name, default, row):
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky=tk.W, padx=10, pady=5)
+        var = tk.StringVar(value=default)
+        vars_dict[var_name] = (var, str)
+        ttk.Entry(parent, textvariable=var, width=45).grid(row=row, column=1, sticky=tk.W, padx=10, pady=5)
+        
+        def browse():
+            from tkinter import filedialog
+            fname = filedialog.askopenfilename(initialdir="bias_and_flats", title=f"Select {label}")
+            if fname: var.set(fname)
+            
+        ttk.Button(parent, text="Browse...", command=browse).grid(row=row, column=2, padx=5)
+        return var
+
+    add_file_selector(lf_calib, "Master Bias:", "bias_path", os.path.join("bias_and_flats", "Master_Bias_1x1_gain_0.fits"), 1)
+    add_file_selector(lf_calib, "Master Flat (V):", "flat_v_path", os.path.join("bias_and_flats", "FLAT_Vmag_1x1_gain_0.fits"), 2)
+    add_file_selector(lf_calib, "Master Flat (B):", "flat_b_path", os.path.join("bias_and_flats", "FLAT_Bmag_1x1_gain_0.fits"), 3)
+
 
     # --- TAB 2: Camera & Detection ---
     tab_cam = ttk.Frame(notebook)
@@ -239,27 +290,93 @@ def run_config_gui():
     )
     tk.Label(help_frame, text=dev_info, justify=tk.LEFT, font=("Arial", 9), fg="#555").pack(side=tk.BOTTOM, anchor="w")
 
+    # --- OUTPUT CONSOLE (Separate Window) ---
+    console_win = tk.Toplevel(root)
+    console_win.title("Calibra: Process Console")
+    console_win.geometry("800x500")
+    console_win.configure(bg="#f0f2f5")
+    
+    console_frame = tk.LabelFrame(console_win, text="Log Output", bg="#f0f2f5", font=("Arial", 10, "bold"))
+    console_frame.pack(fill="both", expand=True, padx=10, pady=10)
+    
+    console = scrolledtext.ScrolledText(console_frame, font=("Consolas", 9), bg="#1e1e1e", fg="#d4d4d4")
+    console.pack(fill="both", expand=True, padx=5, pady=5)
+    
+    # Redirect stdout and stderr
+    sys.stdout = StdoutRedirector(console)
+    sys.stderr = StdoutRedirector(console)
+
     def on_run():
-        nonlocal config
-        config = {}
+        vars_vals = {}
         try:
             for k, (var, vtype) in vars_dict.items():
-                config[k] = vtype(var.get())
+                vars_vals[k] = vtype(var.get())
             
             # Reconstruct dictionary bounds
-            config['xy_bounds'] = {
-                'x_min': config.pop('xy_x_min'),
-                'x_max': config.pop('xy_x_max'),
-                'y_min': config.pop('xy_y_min'),
-                'y_max': config.pop('xy_y_max')
+            config_run = {
+                'input_pattern': vars_vals.pop('input_pattern'),
+                'reference_catalog': vars_vals.pop('reference_catalog'),
+                'detect_sigma': vars_vals.pop('detect_sigma'),
+                'saturation_limit': vars_vals.pop('saturation_limit'),
+                'box_size': vars_vals.pop('box_size'),
+                'aperture_radius': vars_vals.pop('aperture_radius'),
+                'annulus_inner': vars_vals.pop('annulus_inner'),
+                'annulus_outer': vars_vals.pop('annulus_outer'),
+                'match_tolerance_arcsec': vars_vals.pop('match_tolerance_arcsec'),
+                'default_zero_point': vars_vals.pop('default_zero_point'),
+                'calib_snr_threshold': vars_vals.pop('calib_snr_threshold'),
+                'run_new_calibration': vars_vals.pop('run_new_calibration'),
+                'run_shift_analysis': vars_vals.pop('run_shift_analysis'),
+                'ccd_gain': vars_vals.pop('ccd_gain'),
+                'ccd_read_noise': vars_vals.pop('ccd_read_noise'),
+                'ccd_dark_current': vars_vals.pop('ccd_dark_current'),
+                'print_detailed_calibration': vars_vals.pop('print_detailed_calibration'),
+                'print_star_detection_table': vars_vals.pop('print_star_detection_table'),
+                'print_psf_fitting': vars_vals.pop('print_psf_fitting'),
+                'display_plots': vars_vals.pop('display_plots'),
+                'max_plots_to_show_per_file': vars_vals.pop('max_plots_to_show_per_file'),
+                'dao_sharplo': vars_vals.pop('dao_sharplo'),
+                'dao_sharphi': vars_vals.pop('dao_sharphi'),
+                'dao_roundlo': vars_vals.pop('dao_roundlo'),
+                'dao_roundhi': vars_vals.pop('dao_roundhi'),
+                'filter_mode': vars_vals.pop('filter_mode'),
             }
-            config['radec_bounds'] = {
-                'ra_min': config.pop('ra_min'),
-                'ra_max': config.pop('ra_max'),
-                'dec_min': config.pop('dec_min'),
-                'dec_max': config.pop('dec_max')
+            
+            config_run['xy_bounds'] = {
+                'x_min': vars_vals.pop('xy_x_min'),
+                'x_max': vars_vals.pop('xy_x_max'),
+                'y_min': vars_vals.pop('xy_y_min'),
+                'y_max': vars_vals.pop('xy_y_max')
             }
-            root.destroy()
+            config_run['radec_bounds'] = {
+                'ra_min': vars_vals.pop('ra_min'),
+                'ra_max': vars_vals.pop('ra_max'),
+                'dec_min': vars_vals.pop('dec_min'),
+                'dec_max': vars_vals.pop('dec_max')
+            }
+            config_run['calibration_settings'] = {
+                'enable': vars_vals.pop('enable_calibration'),
+                'bias_path': vars_vals.pop('bias_path'),
+                'flat_v_path': vars_vals.pop('flat_v_path'),
+                'flat_b_path': vars_vals.pop('flat_b_path')
+            }
+            
+            if pipeline_callback:
+                # Run in a separate thread to keep UI alive
+                run_btn.config(state=tk.DISABLED, text="Processing...")
+                
+                def thread_target():
+                    try:
+                        pipeline_callback(config_run)
+                    finally:
+                        run_btn.config(state=tk.NORMAL, text="Run Pipeline")
+                
+                thread = threading.Thread(target=thread_target)
+                thread.daemon = True
+                thread.start()
+            else:
+                print("No pipeline callback provided.")
+                
         except ValueError as e:
             messagebox.showerror("Input Error", "Please ensure all numerical fields contain valid numbers.")
 
@@ -267,21 +384,34 @@ def run_config_gui():
     btn_frame = tk.Frame(root, bg="#f0f2f5")
     btn_frame.pack(pady=10)
     
-    cancel_btn = tk.Button(btn_frame, text="Cancel", command=root.destroy, width=15, 
-                           font=("Arial", 10), relief="flat", bg="#ccc")
-    cancel_btn.pack(side=tk.LEFT, padx=10)
+    exit_btn = tk.Button(btn_frame, text="Exit Calibra", command=root.destroy, width=15, 
+                           font=("Arial", 10), relief="flat", bg="#f44336", fg="white")
+    exit_btn.pack(side=tk.LEFT, padx=10)
     
     run_btn = tk.Button(btn_frame, text="Run Pipeline", command=on_run, 
                         bg=accent_green, fg="white", font=("Arial", 10, "bold"), 
                         width=25, relief="flat", pady=8)
     run_btn.pack(side=tk.LEFT, padx=10)
 
+    # Ensure closing main window closes everything
+    def on_closing():
+        root.destroy()
+        sys.exit(0)
+        
+    root.protocol("WM_DELETE_WINDOW", on_closing)
+    console_win.protocol("WM_DELETE_WINDOW", lambda: None) # Prevent closing console individually if desired, or just let it close
+
     # Run the UI loop
     root.mainloop()
 
-    return config
-
 if __name__ == "__main__":
-    # Test the GUI
-    cfg = run_config_gui()
-    print(cfg)
+    # Test the GUI with a dummy callback
+    def dummy_pipeline(cfg):
+        import time
+        print("Starting dummy pipeline...")
+        for i in range(5):
+            print(f"Step {i+1}/5 complete...")
+            time.sleep(1)
+        print("Done!")
+
+    run_config_gui(dummy_pipeline)

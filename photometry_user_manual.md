@@ -49,7 +49,36 @@ $$\sigma_{flux}^2 = \frac{Flux}{Gain} + Area_{ap} \cdot \sigma_{bg}^2 + \frac{Ar
 - **SNR (Signal-to-Noise Ratio)**: Calculated as $Net Flux / \sigma_{flux}$. 
 - **Filtering**: Detections with $SNR < 3.0$ are automatically flagged as unreliable.
 
-### 2.4 Online Catalog Transformations
+#### 1.1 Session Logging
+Calibra automatically generates a permanent record of every analysis run. 
+- **Console Window**: A separate "Process Console" window opens to show real-time progress.
+- **Log Files**: All console output is simultaneously saved to a `.txt` file in the `photometry_output/logs/` directory.
+- **Naming Convention**: Logs are named uniquely to prevent overwriting, e.g., `log_[FileName]_[Filter]_[Catalog].txt`. This allows you to track results across different calibration attempts or reference catalogs.
+
+## 2.0 FITS Pre-processing (Calibration)
+Calibra can perform basic instrumental calibration (Bias and Flat-fielding) for raw FITS files directly from the camera.
+
+> [!IMPORTANT]
+> **Plate Solving Required**: Even when using Calibra's pre-processing, your raw FITS files **must already be plate solved** (i.e., contain valid WCS headers like RA and DEC). Calibra uses these coordinates to match stars with online catalogs. If your file is not plate solved, automated calibration will fail.
+
+### 2.1 Enabling Calibration
+In the **"Pre-processing"** tab of the Configuration GUI:
+1.  Check **"Enable Pre-processing (Apply Bias/Flats)"**.
+2.  Select your **Master Bias** file.
+3.  Select your **Master Flat** files for both V-mag and B-mag.
+
+### 2.2 Automatic Filter Detection
+Calibra automatically reads the `FILTER` keyword from the FITS header of your target image.
+- If the filter contains **"B"**, the B-mag Master Flat is used.
+- Otherwise, the V-mag Master Flat is used by default.
+
+### 2.3 Output of Calibrated Files
+When pre-processing is enabled, Calibra performs the following operation:
+`Calibrated = (Raw - Bias) / (Flat / median(Flat))`
+
+The resulting calibrated images are saved as new FITS files in the `fitsfiles/calibrated/` directory with a `cal_` prefix. These files are then used for the subsequent star detection and photometry steps.
+
+## 2.4 Online Catalog Transformations
 Since catalogs like **ATLAS-RefCat2** and **Gaia DR3** do not natively use the Johnson V/B filters, Calibra applies rigorous mathematical transformations to convert their native photometry for zero-point calibration.
 
 #### ATLAS (Pan-STARRS) to Johnson V/B
