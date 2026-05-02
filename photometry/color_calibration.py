@@ -182,8 +182,9 @@ def derive_color_terms(results_b, results_v, catalog_stars, output_dir, airmass_
         f.write("## Transformation Equations\n")
         f.write("Using these coefficients, your calibrated magnitudes are:\n")
         f.write(f"1. $(B-V)_{{std}} = {res_mu.slope:.3f} \cdot (b-v)_{{corr}} + {res_mu.intercept:.3f}$\n")
-        f.write(f"2. $V_{{std}} = v_{{corr}} + {res_eps.slope:.3f} \cdot (B-V)_{{std}} + {res_eps.intercept:.3f}$\n")
-        f.write("*(Note: v_corr is the instrumental magnitude corrected for extinction)*\n\n")
+        f.write(f"2. $B_{{std}} = b_{{corr}} + {res_psi.slope:.3f} \cdot (B-V)_{{std}} + {res_psi.intercept:.3f}$\n")
+        f.write(f"3. $V_{{std}} = v_{{corr}} + {res_eps.slope:.3f} \cdot (B-V)_{{std}} + {res_eps.intercept:.3f}$\n")
+        f.write("*(Note: v_corr and b_corr are the instrumental magnitudes corrected for extinction)*\n\n")
         
         f.write("![Color Diagnostic Plots](color_plots.png)\n")
 

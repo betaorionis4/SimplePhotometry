@@ -89,16 +89,16 @@ Based on **Kostov et al. (2017)**, using the specific refined coefficients curre
 - *(Note: Alternative Jester et al. (2005) equations are preserved as comments in the source code).*
 
 #### Gaia DR3 to Johnson V/B
-Based on **Riello et al. (2021) Table C.2**, which provides coefficients for the full color range ($-0.5 < G_{BP} - G_{RP} < 5.0$):
-- $V = G - 0.02704 + 0.01424 \cdot C - 0.1604 \cdot C^2 + 0.02334 \cdot C^3$
-- $B = G + 0.2162 + 0.7303 \cdot C - 0.1518 \cdot C^2 + 0.02447 \cdot C^3$
+Based on **GAIA DR3 Documentation,Table 5.9**, which provides coefficients for V in the color range ($-0.5 < G_{BP} - G_{RP} < 5.0$) and for B in the color range ($-0.5 < G_{BP} - G_{RP} < 4.0$):
+- $V = G + 0.02704 - 0.01424 \cdot C + 0.2156 \cdot C^2 - 0.01426 \cdot C^3$
+- $B = G - 0.01448 + 0.6874 \cdot C + 0.3604 \cdot C^2 - 0.06718 \cdot C^3 + 0.006061 \cdot C^4$
 - *where $C = G_{BP} - G_{RP}$*
 
 ---
 
-## 3. The Processing Pipeline (A-F)
+## 3. The Processing Pipeline (A-G)
 
-The pipeline processes each FITS file through six sequential modules:
+The pipeline processes each FITS file through seven sequential modules:
 
 ### Stage A: Star Detection (`star_detection.py`)
 Uses `DAOStarFinder` to scan for density peaks matching a stellar profile. It enforces strict morphological constraints (Sharpness and Roundness) to prevent hot pixels or satellite trails from being flagged as stars.
@@ -130,7 +130,7 @@ Computes the difference between where the FITS header (WCS) *thinks* the star is
 A specialized post-processing tool for deriving instrumental **Color Terms**. 
 - **Requirements**: Requires a B-filter result CSV and a V-filter result CSV of the same field.
 - **Airmass & Extinction**: Automatically handles airmass extraction from results and applies atmospheric extinction correction ($k_B, k_V$).
-- **Robust Iterative Fitting**: 
+- **Iterative Fitting**: 
     - Applies a **2-sigma outlier rejection** algorithm. 
     - First pass calculates the initial spread; second pass performs a high-precision regression on the cleaned data.
 - **Visual Diagnostics**:
@@ -190,3 +190,24 @@ If enabled, the pipeline saves a four-panel graphic for each star showing:
     - Verify that your `Min SNR for Calib` is not set so high that no stars are matched.
 - **Positional Drift?** Check the **Shift Analysis** console summary. Large consistent shifts indicate a mount tracking issue or an inaccurate WCS header.
 - **Slow Performance?** Check if `Print Detailed Calibration` is on; for batch processing, turning this off keeps the console clean and fast.
+
+## References
+
+**GAIA DR3**
+Gaia Collaboration, Vallenari, A., et al. (2023), "Gaia Data Release 3. Summary of the contents and survey properties"
+https://doi.org/10.1051/0004-6361/202243940 
+See also:
+https://www.cosmos.esa.int/web/gaia/dr3
+For the transformation between G and other photometric systems:
+https://gea.esac.esa.int/archive/documentation/GDR3/Data_processing/chap_cu5pho/cu5pho_sec_photSystem/cu5pho_ssec_photRelations.html
+
+**APASS DR9**
+Henden, A. A., et al. (2016), "AAVSO Photometric All Sky Survey (APASS) DR9"
+https://cdsarc.cds.unistra.fr/viz-bin/cat/II/336 
+
+**ATLAS-RefCat2**
+Tonry, J. L., et al. (2018), "The ATLAS All-Sky Stellar Reference Catalog"
+https://doi.org/10.3847/1538-4357/aae386
+See also:
+https://cdsarc.cds.unistra.fr/viz-bin/cat/J/ApJ/867/105
+
