@@ -122,12 +122,16 @@ def fetch_online_catalog(ra_deg, dec_deg, radius_arcmin=15, catalog_name="ATLAS"
                 
                 if not np.isnan(g) and not np.isnan(bp) and not np.isnan(rp):
                     c = bp - rp
-                    # Riello et al. (2021) Table C.2 (Wide range: -0.5 < Gbp-Grp < 5.0)
-                    # Johnson V:
-                    v_mag = g - 0.02704 + 0.01424 * c - 0.1604 * (c**2) + 0.02334 * (c**3)
+                    # Riello et al. (2021) Table C.2; or better Table 5.9 in
+                    # https://gea.esac.esa.int/archive/documentation/GDR3/Data_processing/chap_cu5pho/cu5pho_sec_photSystem/cu5pho_ssec_photRelations.html
+                    # G - V = -0.02704 + 0.01424 * c - 0.2156 * c^2 + 0.01426 * c^3
+                    # V = G - (G - V)
+                    v_mag = g + 0.02704 - 0.01424 * c + 0.2156 * (c**2) - 0.01426 * (c**3)
                     
-                    # Johnson B:
-                    b_mag = g + 0.2162 + 0.7303 * c - 0.1518 * (c**2) + 0.02447 * (c**3)
+                    # G - B = +0.01448 - 0.6874 * c - 0.3604 * c^2 + 0.06718 * c^3 - 0.006061 * c^4
+                    # B = G - (G - B)
+                    b_mag = g - 0.01448 + 0.6874 * c + 0.3604 * (c**2) - 0.06718 * (c**3) + 0.006061 * (c**4)
+
                 else:
                     v_mag = np.nan
                     b_mag = np.nan

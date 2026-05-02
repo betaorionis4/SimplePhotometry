@@ -119,7 +119,7 @@ def run_config_gui(pipeline_callback=None):
     
     info_frame = tk.Frame(about_container, bg="white")
     info_frame.pack(fill="x", pady=10)
-    tk.Label(info_frame, text="Version: 1.1 \tLatest Update: 2026-04-30", font=("Arial", 10), anchor="w", bg="white").pack(fill="x")
+    tk.Label(info_frame, text="Version: 1.3 \tLatest Update: 2026-05-02", font=("Arial", 10), anchor="w", bg="white").pack(fill="x")
     #tk.Label(info_frame, text="Latest Update: 2026-04-30", font=("Arial", 10), anchor="w", bg="white").pack(fill="x")
     
     tk.Label(about_container, text="Description:", font=("Arial", 11, "bold"), anchor="w", bg="white", fg=primary_blue).pack(fill="x", pady=(10, 5))
@@ -220,6 +220,108 @@ def run_config_gui(pipeline_callback=None):
     # --- TAB 2: Camera & Detection ---
     tab_cam = ttk.Frame(notebook)
     notebook.add(tab_cam, text="Camera & Detection")
+    
+    # --- TAB 2.5: Color Calibration ---
+    tab_color = ttk.Frame(notebook)
+    notebook.add(tab_color, text="Color Calibration")
+    
+    lf_color = ttk.LabelFrame(tab_color, text="Derive Transformation Coefficients (B-V Pairs)")
+    lf_color.pack(fill="x", padx=10, pady=10)
+    
+    add_file_selector(lf_color, "B-Filter Results (CSV):", "color_b_csv", "", 0)
+    add_file_selector(lf_color, "V-Filter Results (CSV):", "color_v_csv", "", 1)
+    
+    ttk.Label(lf_color, text="Airmass B:").grid(row=2, column=0, sticky=tk.W, padx=10, pady=5)
+    air_b_var = tk.DoubleVar(value=1.0)
+    vars_dict["air_b"] = (air_b_var, float)
+    ttk.Entry(lf_color, textvariable=air_b_var, width=10).grid(row=2, column=1, sticky=tk.W, padx=10, pady=5)
+    
+    ttk.Label(lf_color, text="Airmass V:").grid(row=3, column=0, sticky=tk.W, padx=10, pady=5)
+    air_v_var = tk.DoubleVar(value=1.0)
+    vars_dict["air_v"] = (air_v_var, float)
+    ttk.Entry(lf_color, textvariable=air_v_var, width=10).grid(row=3, column=1, sticky=tk.W, padx=10, pady=5)
+
+    ttk.Label(lf_color, text="Extinction k_B (Sea Level ~0.35):").grid(row=2, column=2, sticky=tk.W, padx=10, pady=5)
+    k_b_var = tk.DoubleVar(value=0.35)
+    vars_dict["k_b"] = (k_b_var, float)
+    ttk.Entry(lf_color, textvariable=k_b_var, width=10).grid(row=2, column=3, sticky=tk.W, padx=10, pady=5)
+    
+    ttk.Label(lf_color, text="Extinction k_V (Sea Level ~0.20):").grid(row=3, column=2, sticky=tk.W, padx=10, pady=5)
+    k_v_var = tk.DoubleVar(value=0.20)
+    vars_dict["k_v"] = (k_v_var, float)
+    ttk.Entry(lf_color, textvariable=k_v_var, width=10).grid(row=3, column=3, sticky=tk.W, padx=10, pady=5)
+
+    color_status_var = tk.StringVar(value="Select B and V result files to begin.")
+    tk.Label(tab_color, textvariable=color_status_var, fg="#333", font=("Arial", 9, "italic")).pack(pady=5)
+
+    def on_run_color():
+        try:
+            b_csv = vars_dict["color_b_csv"][0].get()
+            v_csv = vars_dict["color_v_csv"][0].get()
+            
+            if not os.path.exists(b_csv) or not os.path.exists(v_csv):
+                messagebox.showerror("File Error", "Please select valid CSV result files for both filters.")
+                return
+            
+            import csv
+            
+            color_status_var.set("Reading results and fetching catalog data...")
+            root.update_idletasks()
+            
+            # Load results using standard csv module
+            def read_csv_to_dicts(path):
+                with open(path, mode='r', encoding='utf-8') as f:
+                    return [row for row in csv.DictReader(f)]
+
+            data_b = read_csv_to_dicts(b_csv)
+            data_v = read_csv_to_dicts(v_csv)
+            
+            # Auto-extract Airmass from CSV if present
+            if data_b and 'airmass' in data_b[0]:
+                try: 
+                    am_b = float(data_b[0]['airmass'])
+                    air_b_var.set(am_b)
+                except: pass
+            if data_v and 'airmass' in data_v[0]:
+                try: 
+                    am_v = float(data_v[0]['airmass'])
+                    air_v_var.set(am_v)
+                except: pass
+
+            # Convert numeric fields
+            for d in data_b:
+                for k in ['ra_deg', 'dec_deg', 'mag_inst', 'snr']:
+                    if k in d and d[k]: d[k] = float(d[k])
+            for d in data_v:
+                for k in ['ra_deg', 'dec_deg', 'mag_inst', 'snr']:
+                    if k in d and d[k]: d[k] = float(d[k])
+
+            # Get catalog (use center of V image)
+            ra_c = sum(d['ra_deg'] for d in data_v) / len(data_v) if data_v else 0
+            dec_c = sum(d['dec_deg'] for d in data_v) / len(data_v) if data_v else 0
+            
+            cat_type = vars_dict["reference_catalog"][0].get()
+            from photometry.color_calibration import derive_color_terms
+            from photometry.calibration import fetch_online_catalog
+            
+            catalog = fetch_online_catalog(ra_c, dec_c, catalog_name=cat_type)
+            
+            if not catalog:
+                color_status_var.set("Error: Could not fetch online catalog.")
+                return
+                
+            res = derive_color_terms(data_b, data_v, 
+                                     catalog, "photometry_output", 
+                                     airmass_b=air_b_var.get(), airmass_v=air_v_var.get(),
+                                     k_b=k_b_var.get(), k_v=k_v_var.get())
+            color_status_var.set(res)
+            
+        except Exception as e:
+            color_status_var.set(f"Error: {e}")
+            messagebox.showerror("Analysis Error", str(e))
+
+    tk.Button(tab_color, text="Run Color Transformation Analysis", command=on_run_color,
+              bg="#673ab7", fg="white", font=("Arial", 10, "bold"), pady=8).pack(pady=10)
 
     lf_ccd = ttk.LabelFrame(tab_cam, text="CCD Settings (Error Analysis)")
     lf_ccd.pack(fill="x", padx=10, pady=10)
@@ -379,7 +481,15 @@ def run_config_gui(pipeline_callback=None):
                 
                 def thread_target():
                     try:
-                        pipeline_callback(config_run)
+                        results = pipeline_callback(config_run)
+                        # Auto-populate Color Calibration tab if B/V pairs found
+                        if results:
+                            for csv_path, filt in results:
+                                f_upper = filt.upper()
+                                if 'B' in f_upper:
+                                    vars_dict['color_b_csv'][0].set(csv_path)
+                                elif 'V' in f_upper:
+                                    vars_dict['color_v_csv'][0].set(csv_path)
                     finally:
                         run_btn.config(state=tk.NORMAL, text="Run Pipeline")
                 
