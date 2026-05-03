@@ -1,6 +1,6 @@
-# Photometry with Calibra: Comprehensive User Manual - Updated 2026-05-02
+# Photometry with Calibra: Comprehensive User Manual
 
-Welcome to **Calibra** (an automated photometric analysis & calibration toolkit), a professional-grade astronomical image analysis suite. 
+Welcome to **Calibra** (:an automated photometric analysis & calibration toolkit), a professional-grade astronomical image analysis suite. 
 This short manual provides some background on the software's architecture, mathematical principles, and operational workflow.
 
 The code can identify stars, perform PSF fitting to extract fluxes (using aperture photometry), and compares instrumental magnitudes with refernces magnitudes from catalogues available online (e.g. APASS DR9). Note that the provided fits file(s) need to have a WCS (i.e. they need to be plate solved).
@@ -79,16 +79,32 @@ When pre-processing is enabled, Calibra performs the following operation:
 The resulting calibrated images are saved as new FITS files in a `calibrated/` subfolder located within your input FITS directory (e.g., `C:\Astro\Photometry_Calibra\fitsfiles\calibrated\`). These files are then used for the subsequent star detection and photometry steps.
 
 ## 2.4 Online Catalog Transformations
-Calibra defaults to **GAIA_DR3** for high-precision zero-point calibration, but also supports ATLAS-RefCat2 and APASS.
-Since catalogs like **ATLAS-RefCat2** and **Gaia DR3** do not natively use the Johnson V/B filters, Calibra applies rigorous mathematical transformations to convert their native photometry for zero-point calibration.
+Calibra defaults to **ATLAS-RefCat2** for high-precision zero-point calibration, but also supports **APASS DR9**, **GAIA_DR3**, and the **Landolt Standard Star Catalogue**.
 
-#### ATLAS (Pan-STARRS) to Johnson V/B
+Since **ATLAS-RefCat2** and **GAIA_DR3** do not natively use the Johnson V/B filters, Calibra applies rigorous mathematical transformations to convert their native photometry for zero-point calibration. 
+
+**APASS DR9** and **Landolt Standard Star Catalogue** provide native Johnson V/B measurements natively.
+
+#### ATLAS-RefCat2 
+ATLAS-RefCat2 provides high-quality, all-sky photometry in g, r, i, z, and y bands. The catalog is derived from the Legacy Survey of Space and Time (LSST) Pre-Operations Color Camera (POC) and is widely used for photometric calibration due to its high precision and comprehensive sky coverage.
+
+Transformations to Johnson V/B:
 Based on **Kostov et al. (2017)**, using the specific refined coefficients currently implemented in Calibra:
 - $V = g - 0.020 - 0.498(g-r) - 0.008(g-r)^2$
 - $B = g + 0.199 + 0.540(g-r) + 0.016(g-r)^2$
 - *(Note: Alternative Jester et al. (2005) equations are preserved as comments in the source code).*
 
-#### Gaia DR3 to Johnson V/B
+#### Landolt Standard Star Catalogue
+Calibra automatically aggregates data from four Landolt standard fields catalogs (II/183A, J/AJ/137/4186, J/AJ/133/2502, J/AJ/146/131). 
+*Note: Landolt standard stars are only present in specific celestial regions (e.g., equatorial SA fields).*
+
+#### APASS DR9
+APASS provides high-quality, Johnson-band calibrated magnitudes for the entire visible sky, derived from the AAVSO Photometric All-Sky Survey.
+
+#### Gaia DR3
+Gaia is a space observatory mission led by the European Space Agency (ESA), providing astrometric, photometric, and spectrophotometric data for celestial objects. 
+
+Transformations to Johnson V/B:
 Based on **GAIA DR3 Documentation,Table 5.9**, which provides coefficients for V in the color range ($-0.5 < G_{BP} - G_{RP} < 5.0$) and for B in the color range ($-0.5 < G_{BP} - G_{RP} < 4.0$):
 - $V = G + 0.02704 - 0.01424 \cdot C + 0.2156 \cdot C^2 - 0.01426 \cdot C^3$
 - $B = G - 0.01448 + 0.6874 \cdot C + 0.3604 \cdot C^2 - 0.06718 \cdot C^3 + 0.006061 \cdot C^4$
@@ -211,3 +227,17 @@ https://doi.org/10.3847/1538-4357/aae386
 See also:
 https://cdsarc.cds.unistra.fr/viz-bin/cat/J/ApJ/867/105
 
+**Landolt Standard Star Catalogue**
+Aggregates four primary standard field catalogs via VizieR:
+- Landolt, A. U. (1992), "UBVRI photometric standard stars in the magnitude range 11.5 < V < 16.0 around the celestial equator" (Vizier:VII/183A)
+https://ui.adsabs.harvard.edu/scan/manifest/1992AJ....104..340L  
+https://cdsarc.cds.unistra.fr/viz-bin/cat/II/183A
+- Landolt, A. U. (2009), "UBVRI photometric standard stars around the celestial equator: Updates and Additions" (Vizier:J/AJ/137/4186)
+http://dx.doi.org/10.1088/0004-6256/137/5/4186 
+https://cdsarc.cds.unistra.fr/viz-bin/cat/J/AJ/137/4186
+- Landolt, A. U. (2007), "UBVRI photometric standard stars around the sky at -50 deg declination" (Vizier:J/AJ/133/2502)
+https://iopscience.iop.org/article/10.1086/518000/pdf
+https://cdsarc.cds.unistra.fr/viz-bin/cat/J/AJ/133/2502
+- Landolt, A. U. (2013), "UBVRI photometric standard stars around the sky at +50 deg declination" (Vizier:J/AJ/146/131)
+https://iopscience.iop.org/article/10.1088/0004-6256/146/5/131
+https://cdsarc.cds.unistra.fr/viz-bin/cat/J/AJ/146/131

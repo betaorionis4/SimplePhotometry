@@ -29,7 +29,7 @@ def run_config_gui(pipeline_callback=None):
     """
     root = tk.Tk()
     root.title("Calibra: Automated Photometric Analysis & Calibration Toolkit")
-    root.geometry("900x750")
+    root.geometry("950x650")
     root.resizable(True, True)
     root.configure(bg="#f0f2f5") 
 
@@ -119,17 +119,16 @@ def run_config_gui(pipeline_callback=None):
     
     info_frame = tk.Frame(about_container, bg="white")
     info_frame.pack(fill="x", pady=10)
-    tk.Label(info_frame, text="Version: 1.3 \tLatest Update: 2026-05-02", font=("Arial", 10), anchor="w", bg="white").pack(fill="x")
+    tk.Label(info_frame, text="Version: 1.4 \tLatest Update: 2026-05-03", font=("Arial", 10), anchor="w", bg="white").pack(fill="x")
     #tk.Label(info_frame, text="Latest Update: 2026-04-30", font=("Arial", 10), anchor="w", bg="white").pack(fill="x")
     
     tk.Label(about_container, text="Description:", font=("Arial", 11, "bold"), anchor="w", bg="white", fg=primary_blue).pack(fill="x", pady=(10, 5))
     desc_text = (
-        "Calibra is a toolkit for the automated analysis of astronomical \n"
-        "FITS images. It uses star detection, sub-pixel PSF fitting, \n"
-        "aperture photometry, for the zero-point calibration \n"
-        "using online catalogs as ATLAS-RefCat2, APASS and others.\n\n"
-        "Designed for astronomers and enthusiasts to explore the \n"
-        "principles of CCD/CMOS photometry."
+        "Calibra is a toolkit for the automated analysis of astronomical FITS images.\n"
+        "It uses star detection, sub-pixel PSF fitting, aperture photometry, \n"
+        "zero-point calibration using online catalogs as ATLAS-RefCat2, APASS DR9, \n"
+        "Landolt Standards Catalogue and Gaia DR3, and offers determination of color transformations between filters.\n\n"
+        "Designed for astronomers and enthusiasts to explore the principles of CCD/CMOS photometry."
     )
     tk.Label(about_container, text=desc_text, justify=tk.LEFT, font=("Arial", 10), anchor="w", bg="white").pack(fill="x")
 
@@ -155,9 +154,9 @@ def run_config_gui(pipeline_callback=None):
     ttk.Button(lf_files, text="Browse...", command=browse_input_dir).grid(row=0, column=2, padx=5)
     
     ttk.Label(lf_files, text="Ref Catalog:").grid(row=1, column=0, sticky=tk.W, padx=10, pady=5)
-    cat_var = tk.StringVar(value="GAIA_DR3")
+    cat_var = tk.StringVar(value="ATLAS refcat2")
     vars_dict["reference_catalog"] = (cat_var, str)
-    cat_cb = ttk.Combobox(lf_files, textvariable=cat_var, values=["GAIA_DR3", "ATLAS refcat2", "APASS DR9", os.path.join('photometry_refstars', 'reference_stars.csv')], width=62)
+    cat_cb = ttk.Combobox(lf_files, textvariable=cat_var, values=["ATLAS refcat2", "APASS DR9", "Landolt Standard Star Catalogue", "GAIA_DR3", os.path.join('photometry_refstars', 'reference_stars.csv')], width=62)
     cat_cb.grid(row=1, column=1, sticky=tk.W, padx=10, pady=5)
     
     def browse_catalog():
@@ -352,7 +351,7 @@ def run_config_gui(pipeline_callback=None):
     lf_cal = ttk.LabelFrame(tab_phot, text="Zero Point Calibration")
     lf_cal.pack(fill="x", padx=10, pady=10)
     add_entry(lf_cal, "Match Tolerance (arcsec):", "match_tolerance_arcsec", 8.0, 0)
-    add_entry(lf_cal, "Default Zero Point:", "default_zero_point", 23.399, 1)
+    add_entry(lf_cal, "Default Zero Point:", "default_zero_point", 24.0, 1)
     add_entry(lf_cal, "Min SNR for Calib:", "calib_snr_threshold", 10.0, 2)
     add_check(lf_cal, "Run New ZP Calibration (Overwrite Default)", "run_new_calibration", True, 3)
     add_check(lf_cal, "Run Positional Shift Analysis", "run_shift_analysis", False, 4)

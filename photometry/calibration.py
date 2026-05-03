@@ -25,7 +25,8 @@ def fetch_online_catalog(ra_deg, dec_deg, radius_arcmin=15, catalog_name="ATLAS"
         "ATLAS REFCAT2": "J/ApJ/867/105",
         "APASS": "II/336",
         "APASS DR9": "II/336",
-        "GAIA_DR3": "I/355"
+        "GAIA_DR3": "I/355",
+        "LANDOLT": ["II/183A", "J/AJ/137/4186", "J/AJ/133/2502", "J/AJ/146/131"]
     }
     
     cat_upper = catalog_name.upper()
@@ -36,6 +37,7 @@ def fetch_online_catalog(ra_deg, dec_deg, radius_arcmin=15, catalog_name="ATLAS"
         if "ATLAS" in cat_upper: catalog_id = viz_map["ATLAS"]
         elif "GAIA" in cat_upper: catalog_id = viz_map["GAIA_DR3"]
         elif "APASS" in cat_upper: catalog_id = viz_map["APASS"]
+        elif "LANDOLT" in cat_upper: catalog_id = viz_map["LANDOLT"]
         else:
             print(f"Error: Unknown catalog {catalog_name}. Defaulting to ATLAS.")
             catalog_id = viz_map["ATLAS"]
@@ -44,12 +46,13 @@ def fetch_online_catalog(ra_deg, dec_deg, radius_arcmin=15, catalog_name="ATLAS"
     if "ATLAS" in cat_upper: catalog_name = "ATLAS"
     elif "GAIA" in cat_upper: catalog_name = "GAIA_DR3"
     elif "APASS" in cat_upper: catalog_name = "APASS"
+    elif "LANDOLT" in cat_upper: catalog_name = "LANDOLT"
 
     # Increase timeout and configure Vizier
     from astropy.utils.data import Conf
     Conf.remote_timeout.set(60) # 60 seconds timeout
     
-    v = Vizier(columns=['*'], row_limit=-1)
+    v = Vizier(columns=['*', '_RAJ2000', '_DEJ2000'], row_limit=-1)
     coord = SkyCoord(ra=ra_deg, dec=dec_deg, unit=(u.deg, u.deg), frame='icrs')
     
     try:
@@ -74,89 +77,111 @@ def fetch_online_catalog(ra_deg, dec_deg, radius_arcmin=15, catalog_name="ATLAS"
             return []
 
     table = result[0]
-    print(f"VizieR returned {len(table)} raw rows from {catalog_name}.")
+    print(f"VizieR returned {len(result)} tables for {catalog_name}.")
     ref_stars = []
     
-    # Check available columns once
-    cols = table.colnames
-    
-    for row in table:
-        try:
-            if catalog_name == "ATLAS":
-                ra = float(row['RA_ICRS'])
-                dec = float(row['DE_ICRS'])
-                g = float(row['gmag']) if 'gmag' in cols else np.nan
-                r = float(row['rmag']) if 'rmag' in cols else np.nan
-                
-                if not np.isnan(g) and not np.isnan(r):
-                    color = g - r
-                    # Jester et al. (2005) transformations (Stars, g-r < 2.1)
-                    # Often used in software like ASTAP/MuniWin as the default for ATLAS
-                    #v_mag = g - 0.011 - 0.487 * color
-                    #b_mag = g + 0.202 + 0.473 * color
+    for table in result:
+        cols = table.colnames
+        for row in table:
+            try:
+                if catalog_name == "ATLAS":
+                    ra = float(row['RA_ICRS'])
+                    dec = float(row['DE_ICRS'])
+                    g = float(row['gmag']) if 'gmag' in cols else np.nan
+                    r = float(row['rmag']) if 'rmag' in cols else np.nan
                     
-                    # Alternative: Kostov et al. (2017) - Specific for Pan-STARRS1
-                    v_mag = g - 0.020 - 0.498 * color - 0.008 * (color**2)
-                    b_mag = g + 0.199 + 0.540 * color + 0.016 * (color**2)
-                else:
-                    v_mag = g if not np.isnan(g) else np.nan
-                    b_mag = r if not np.isnan(r) else np.nan
-                
-                if 'Vmag' in cols and not np.isnan(float(row['Vmag'])): v_mag = float(row['Vmag'])
-                if 'Bmag' in cols and not np.isnan(float(row['Bmag'])): b_mag = float(row['Bmag'])
+                    if not np.isnan(g) and not np.isnan(r):
+                        color = g - r
+                        # Jester et al. (2005) transformations (Stars, g-r < 2.1)
+                        # Often used in software like ASTAP/MuniWin as the default for ATLAS
+                        #v_mag = g - 0.011 - 0.487 * color
+                        #b_mag = g + 0.202 + 0.473 * color
+                        
+                        # Alternative: Kostov et al. (2017) - Specific for Pan-STARRS1
+                        v_mag = g - 0.020 - 0.498 * color - 0.008 * (color**2)
+                        b_mag = g + 0.199 + 0.540 * color + 0.016 * (color**2)
+                    else:
+                        v_mag = g if not np.isnan(g) else np.nan
+                        b_mag = r if not np.isnan(r) else np.nan
+                    
+                    if 'Vmag' in cols and not np.isnan(float(row['Vmag'])): v_mag = float(row['Vmag'])
+                    if 'Bmag' in cols and not np.isnan(float(row['Bmag'])): b_mag = float(row['Bmag'])
 
-            elif catalog_name == "GAIA_DR3":
-                ra = float(row['RA_ICRS'])
-                dec = float(row['DE_ICRS'])
-                
                 # Handle masked elements from VizieR to avoid UserWarnings
                 def get_val(col):
+                    if col not in cols: return np.nan
                     val = row[col]
                     if np.ma.is_masked(val): return np.nan
                     try: return float(val)
                     except: return np.nan
 
-                g = get_val('Gmag')
-                bp = get_val('BPmag')
-                rp = get_val('RPmag')
+                if catalog_name == "GAIA_DR3":
+                    ra = float(row['RA_ICRS'])
+                    dec = float(row['DE_ICRS'])
                 
-                if not np.isnan(g) and not np.isnan(bp) and not np.isnan(rp):
-                    c = bp - rp
-                    # Riello et al. (2021) Table C.2; or better Table 5.9 in
-                    # https://gea.esac.esa.int/archive/documentation/GDR3/Data_processing/chap_cu5pho/cu5pho_sec_photSystem/cu5pho_ssec_photRelations.html
-                    # G - V = -0.02704 + 0.01424 * c - 0.2156 * c^2 + 0.01426 * c^3
-                    # V = G - (G - V)
-                    v_mag = g + 0.02704 - 0.01424 * c + 0.2156 * (c**2) - 0.01426 * (c**3)
+                    g = get_val('Gmag')
+                    bp = get_val('BPmag')
+                    rp = get_val('RPmag')
+                
+                    if not np.isnan(g) and not np.isnan(bp) and not np.isnan(rp):
+                        c = bp - rp
+                        # Riello et al. (2021) Table C.2; or better Table 5.9 in
+                        # https://gea.esac.esa.int/archive/documentation/GDR3/Data_processing/chap_cu5pho/cu5pho_sec_photSystem/cu5pho_ssec_photRelations.html
+                        # G - V = -0.02704 + 0.01424 * c - 0.2156 * c^2 + 0.01426 * c^3
+                        # V = G - (G - V)
+                        v_mag = g + 0.02704 - 0.01424 * c + 0.2156 * (c**2) - 0.01426 * (c**3)
                     
-                    # G - B = +0.01448 - 0.6874 * c - 0.3604 * c^2 + 0.06718 * c^3 - 0.006061 * c^4
-                    # B = G - (G - B)
-                    b_mag = g - 0.01448 + 0.6874 * c + 0.3604 * (c**2) - 0.06718 * (c**3) + 0.006061 * (c**4)
+                        # G - B = +0.01448 - 0.6874 * c - 0.3604 * c^2 + 0.06718 * c^3 - 0.006061 * c^4
+                        # B = G - (G - B)
+                        b_mag = g - 0.01448 + 0.6874 * c + 0.3604 * (c**2) - 0.06718 * (c**3) + 0.006061 * (c**4)
 
-                else:
-                    v_mag = np.nan
-                    b_mag = np.nan
+                    else:
+                        v_mag = np.nan
+                        b_mag = np.nan
 
-            else: # Default/APASS
-                ra = float(row['RAJ2000'])
-                dec = float(row['DEJ2000'])
-                v_mag = float(row['Vmag']) if 'Vmag' in cols else np.nan
-                b_mag = float(row['Bmag']) if 'Bmag' in cols else np.nan
+                elif catalog_name == "LANDOLT":
+                    ra = float(row['_RAJ2000']) if '_RAJ2000' in cols else float(row['RAJ2000'])
+                    dec = float(row['_DEJ2000']) if '_DEJ2000' in cols else float(row['DEJ2000'])
+                
+                    # Check for alternative column names across the different Landolt catalogs
+                    if 'Vmag' in cols:
+                        v_mag = get_val('Vmag')
+                    elif '<Vmag>' in cols:
+                        v_mag = get_val('<Vmag>')
+                    else:
+                        v_mag = np.nan
+                    
+                    if 'B-V' in cols:
+                        b_v = get_val('B-V')
+                    elif '<B-V>' in cols:
+                        b_v = get_val('<B-V>')
+                    else:
+                        b_v = np.nan
+                    
+                    # The catalogs provide V and B-V. Compute B directly.
+                    b_mag = v_mag + b_v if not np.isnan(v_mag) and not np.isnan(b_v) else np.nan
 
-            if not np.isnan(v_mag) and v_mag < 18.0:
-                ref_stars.append({
-                    'id': f"online_{len(ref_stars)}",
-                    'ra_deg': ra,
-                    'dec_deg': dec,
-                    'V_mag': v_mag,
-                    'B_mag': b_mag,
-                    'raw_g': g if catalog_name == "ATLAS" else np.nan,
-                    'raw_r': r if catalog_name == "ATLAS" else np.nan,
-                    'raw_G': g if catalog_name == "GAIA_DR3" else np.nan,
-                    'raw_BP': bp if catalog_name == "GAIA_DR3" else np.nan,
-                    'raw_RP': rp if catalog_name == "GAIA_DR3" else np.nan
-                })
-        except:
-            continue
+                else: # Default/APASS
+                    ra = float(row['RAJ2000'])
+                    dec = float(row['DEJ2000'])
+                    v_mag = float(row['Vmag']) if 'Vmag' in cols else np.nan
+                    b_mag = float(row['Bmag']) if 'Bmag' in cols else np.nan
+
+                if not np.isnan(v_mag) and v_mag < 18.0:
+                    ref_stars.append({
+                        'id': f"online_{len(ref_stars)}",
+                        'ra_deg': ra,
+                        'dec_deg': dec,
+                        'V_mag': v_mag,
+                        'B_mag': b_mag,
+                        'raw_g': g if catalog_name == "ATLAS" else np.nan,
+                        'raw_r': r if catalog_name == "ATLAS" else np.nan,
+                        'raw_G': g if catalog_name == "GAIA_DR3" else np.nan,
+                        'raw_BP': bp if catalog_name == "GAIA_DR3" else np.nan,
+                        'raw_RP': rp if catalog_name == "GAIA_DR3" else np.nan
+                    })
+            except:
+                continue
 
     if verbose:
         print(f"Successfully retrieved {len(ref_stars)} stars from {catalog_name}.")
@@ -262,7 +287,7 @@ def get_ref_stars(ref_catalog_file, center_ra=None, center_dec=None, radius_arcm
     """
     ref_stars = []
     cat_upper = ref_catalog_file.upper()
-    is_online = any(k in cat_upper for k in ["ATLAS", "APASS", "GAIA"])
+    is_online = any(k in cat_upper for k in ["ATLAS", "APASS", "GAIA", "LANDOLT"])
 
     if is_online and center_ra is not None and center_dec is not None:
         cat_name = cat_upper # Normalized inside fetch_online_catalog
@@ -319,7 +344,7 @@ def match_and_calibrate(results, ref_catalog_file, filter_name, tolerance_arcsec
     
     # Identify Source
     source_name = ref_catalog_file
-    if ref_catalog_file.upper() in ["ATLAS", "APASS", "GAIA_DR3"]:
+    if ref_catalog_file.upper() in ["ATLAS", "APASS", "GAIA_DR3", "LANDOLT STANDARD STAR CATALOGUE"]:
         source_name = f"Online VizieR ({ref_catalog_file.upper()})"
     else:
         source_name = f"Local File ({os.path.basename(ref_catalog_file)})"
