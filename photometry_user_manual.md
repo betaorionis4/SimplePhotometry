@@ -161,7 +161,34 @@ A specialized post-processing tool for deriving instrumental **Color Terms**.
 
 ---
 
-## 4. Running the Pipeline: The Configuration GUI
+---
+
+## 4. Differential Photometry
+
+The Differential Photometry module is intended to compute AAVSO-ready standard magnitudes for every star in a field relative to a designated reference star. The reference star can be either automatically selected by the pipeline or manually specified by the user to focus on measuring magnitudes of variable stars using a known comparison star.
+
+### 4.1 Methodology
+- **Target Matching**: The module automatically cross-matches stars from your B-filter and V-filter results (using a 2-arcsecond search radius) to form reliable $(b-v)$ pairs.
+- **Reference Catalog Query**: The matched coordinates are queried against your chosen standard catalog (e.g., ATLAS, APASS, Landolt). The catalog search covers a field of view that is defined by the "Catalog Search Radius" in the GUI.
+- **Reference Star Selection**:
+  - **Automatic Mode**: The pipeline filters the catalog matches to automatically select the optimal reference star. It strictly chooses a star that is:
+    1. Unsaturated (peak ADU below the non-linear regime).
+    2. Of moderate color (catalog $0.4 \leq (B-V) \leq 0.8$) to minimize extreme transformation residuals.
+    3. The brightest available instrumental $V$ magnitude among the remaining candidates.
+  - **Manual Mode**: The user inputs specific RA and Dec coordinates ($h, m, s$ and $d, m, s$). The pipeline finds the matched detection within a 4-arcsecond tolerance of those coordinates, verifies it has catalog data, and strictly forces it to be the reference anchor.
+- **Zero Point Calculation**: Using the user-provided Color Transformation Coefficients ($T_{bv}, T_{b\_bv}, T_{v\_bv}$) and atmospheric extinction ($k_B, k_V$), the pipeline derives the instrumental zero points ($Z_{BV}, Z_B, Z_V$) relative to this reference star. The color transformation coefficients can be taken from the Color Transformation Calibration module (see Section 3.G) or manually entered by the user.
+
+### 4.2 Standard Magnitude Output
+These zero points are instantly applied to all other stars in the field to get standard magnitudes ($B, V$) and color index ($B-V$). The final standard magnitudes and color index are saved in a Markdown table (`differential_photometry_results.md`) alongside a more detailed CSV file (with all the instrumental data, errors, etc).
+
+### 4.3 Accuracy Evaluation
+To evaluate the calibration quality, the pipeline automatically compares the internally computed standard magnitudes against the actual catalog magnitudes for all matching stars (excluding the reference anchor).
+- **Statistical Fitting**: It calculates the deviations ($\Delta B$, $\Delta V$, $\Delta(B-V)$) and fits a Gaussian distribution to determine the mean offset ($\mu$) and standard deviation/scatter ($\sigma$).
+- **Plotting**: It generates a 3-panel histogram plot with the Gaussian fits overlaid (`photometry_plots/diff_photometry_deviations.png`), allowing you to rapidly identify any systematic errors or estimate your measurement uncertainties. The statistical fits are appended to the `differential_photometry_report.md`.
+
+---
+
+## 5. Running the Pipeline: The Configuration GUI
 
 Launch the pipeline via `python main.py` to open the **Configuration GUI**.
 
@@ -170,19 +197,24 @@ Launch the pipeline via `python main.py` to open the **Configuration GUI**.
 3.  **Photometry & Calibration Tab**: 
     - Set your aperture radii (rule of thumb: $\approx 2 \times FWHM$).
     - Select your **Ref Catalog**: Choose **ATLAS** (ATLAS-RefCat2), **APASS** (DR9), or **GAIA_DR3** for online calibration, or select a local CSV.
+    - Set **Catalog Search Radius (arcmin)**: Set this to encompass your Field of View. This dictates how much catalog data is pulled from VizieR for Zero-Point and Differential operations.
     - Set **Min SNR for Calib**: Filter out noisy stars from the zero-point calculation (default 10.0).
     - **Print Detailed Calibration**: Toggle the individual "Match" logs in the console. (Summary always shown).
     - Enable/disable diagnostic plots and massive data tables.
-5.  **Color Calibration Tab**: 
+4.  **Color Calibration Tab**: 
     - **Auto-Hand-off**: After running a B and V image, these fields will auto-populate with the correct CSV paths.
     - **Extinction Correction**: Enter or verify the k-coefficients ($k_B, k_V$) and airmass.
     - Click **"Run Color Transformation Analysis"** to calculate your equipment's color terms.
+5.  **Differential Photometry Tab**:
+    - **Auto-Fill**: The pipeline automatically loads your most recent `targets_auto` CSV files and your last derived Color Coefficients.
+    - **Reference Star Selection**: Toggle between "Automatic" (picks the brightest valid star) or "Manual Coordinates" to strictly anchor your analysis to a specific star.
+    - Click **"Execute Differential Photometry"** to perform the full magnitude calculation workflow.
 
 ---
 
-## 5. Understanding the Output
+## 6. Understanding the Output
 
-### 5.1 Results CSV (`photometry_output/`)
+### 6.1 Results CSV (`photometry_output/`)
 The primary output for every image. Key columns include:
 - `refined_x` / `refined_y`: The high-precision sub-pixel coordinates.
 - `ra_hms` / `dec_dms`: Celestial coordinates from the WCS header.
@@ -190,7 +222,7 @@ The primary output for every image. Key columns include:
 - `mag_calibrated`: The final, zero-point corrected true magnitude.
 - `mag_calibrated_err`: The ± uncertainty of the final magnitude.
 
-### 5.2 Diagnostic Plots (`photometry_plots/`)
+### 6.2 Diagnostic Plots (`photometry_plots/`)
 If enabled, the pipeline saves a four-panel graphic for each star showing:
 1.  **Raw Data**: The original pixel cutout.
 2.  **Gaussian Model**: The idealized mathematical fit.
@@ -199,7 +231,7 @@ If enabled, the pipeline saves a four-panel graphic for each star showing:
 
 ---
 
-## 6. Troubleshooting & Tips
+## 7. Troubleshooting & Tips
 - **No Stars Found?** Verify your `Detection Sigma`. Lower it (e.g., to 3.0) for faint targets or increase it (e.g., to 10.0) for crowded fields.
 - **Calibration Failures?** 
     - Check if the FITS header has valid `RA`/`DEC` keywords for online queries.

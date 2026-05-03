@@ -145,7 +145,7 @@ def process_file(fits_filename, config):
                         output_report=output_report, center_ra=center_ra, center_dec=center_dec,
                         snr_threshold=config['calib_snr_threshold'],
                         print_to_console=config['print_detailed_calibration'],
-                        header=header)
+                        header=header, radius_arcmin=config.get('catalog_search_radius', 15.0))
 
 
     # Calculate Detection Limits

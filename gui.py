@@ -227,8 +227,16 @@ def run_config_gui(pipeline_callback=None):
     lf_color = ttk.LabelFrame(tab_color, text="Derive Transformation Coefficients (B-V Pairs)")
     lf_color.pack(fill="x", padx=10, pady=10)
     
-    add_file_selector(lf_color, "B-Filter Results (CSV):", "color_b_csv", "", 0)
-    add_file_selector(lf_color, "V-Filter Results (CSV):", "color_v_csv", "", 1)
+    import glob
+    def get_latest_csv(pattern):
+        files = glob.glob(os.path.join("photometry_output", pattern))
+        return max(files, key=os.path.getmtime) if files else ""
+        
+    recent_b_csv = get_latest_csv("*Bmag*.csv") or get_latest_csv("*_B_*.csv")
+    recent_v_csv = get_latest_csv("*Vmag*.csv") or get_latest_csv("*_V_*.csv")
+    
+    add_file_selector(lf_color, "B-Filter Results (CSV):", "color_b_csv", recent_b_csv, 0)
+    add_file_selector(lf_color, "V-Filter Results (CSV):", "color_v_csv", recent_v_csv, 1)
     
     ttk.Label(lf_color, text="Airmass B:").grid(row=2, column=0, sticky=tk.W, padx=10, pady=5)
     air_b_var = tk.DoubleVar(value=1.0)
@@ -296,14 +304,16 @@ def run_config_gui(pipeline_callback=None):
                     if k in d and d[k]: d[k] = float(d[k])
 
             # Get catalog (use center of V image)
-            ra_c = sum(d['ra_deg'] for d in data_v) / len(data_v) if data_v else 0
-            dec_c = sum(d['dec_deg'] for d in data_v) / len(data_v) if data_v else 0
+            valid_coords = [d for d in data_v if isinstance(d.get('ra_deg'), float) and isinstance(d.get('dec_deg'), float)]
+            ra_c = sum(d['ra_deg'] for d in valid_coords) / len(valid_coords) if valid_coords else 0
+            dec_c = sum(d['dec_deg'] for d in valid_coords) / len(valid_coords) if valid_coords else 0
             
             cat_type = vars_dict["reference_catalog"][0].get()
+            search_radius = float(vars_dict["catalog_search_radius"][0].get())
             from photometry.color_calibration import derive_color_terms
-            from photometry.calibration import fetch_online_catalog
+            from photometry.calibration import get_ref_stars
             
-            catalog = fetch_online_catalog(ra_c, dec_c, catalog_name=cat_type)
+            catalog = get_ref_stars(cat_type, ra_c, dec_c, radius_arcmin=search_radius, verbose=True)
             
             if not catalog:
                 color_status_var.set("Error: Could not fetch online catalog.")
@@ -329,8 +339,8 @@ def run_config_gui(pipeline_callback=None):
     lf_diff = ttk.LabelFrame(tab_diff, text="Compute B/V relative to a reference star")
     lf_diff.pack(fill="x", padx=10, pady=10)
     
-    add_file_selector(lf_diff, "B-Filter Results (CSV):", "diff_b_csv", "", 0)
-    add_file_selector(lf_diff, "V-Filter Results (CSV):", "diff_v_csv", "", 1)
+    add_file_selector(lf_diff, "B-Filter Results (CSV):", "diff_b_csv", recent_b_csv, 0)
+    add_file_selector(lf_diff, "V-Filter Results (CSV):", "diff_v_csv", recent_v_csv, 1)
     
     ttk.Label(lf_diff, text="Extinction k_B:").grid(row=2, column=0, sticky=tk.W, padx=10, pady=5)
     diff_kb_var = tk.DoubleVar(value=0.35)
@@ -359,6 +369,45 @@ def run_config_gui(pipeline_callback=None):
     
     diff_status_var = tk.StringVar(value="Load coefficients and select CSV files to begin.")
     
+    lf_ref = ttk.LabelFrame(tab_diff, text="Reference Star Selection")
+    lf_ref.pack(fill="x", padx=10, pady=10)
+    
+    ref_mode_var = tk.StringVar(value="auto")
+    ttk.Radiobutton(lf_ref, text="Automatic (Brightest star with 0.4 <= B-V <= 0.8)", variable=ref_mode_var, value="auto").grid(row=0, column=0, columnspan=4, sticky=tk.W, padx=10, pady=5)
+    ttk.Radiobutton(lf_ref, text="Manual Coordinates", variable=ref_mode_var, value="manual").grid(row=1, column=0, columnspan=4, sticky=tk.W, padx=10, pady=5)
+    
+    # RA boxes
+    ttk.Label(lf_ref, text="RA:").grid(row=2, column=0, sticky=tk.E, padx=(10, 2), pady=5)
+    ra_h_var = tk.StringVar(value="14")
+    ttk.Entry(lf_ref, textvariable=ra_h_var, width=4).grid(row=2, column=1, sticky=tk.W, padx=2)
+    ttk.Label(lf_ref, text="h").grid(row=2, column=2, sticky=tk.W, padx=0)
+    ra_m_var = tk.StringVar(value="34")
+    ttk.Entry(lf_ref, textvariable=ra_m_var, width=4).grid(row=2, column=3, sticky=tk.W, padx=2)
+    ttk.Label(lf_ref, text="m").grid(row=2, column=4, sticky=tk.W, padx=0)
+    ra_s_var = tk.StringVar(value="00.00")
+    ttk.Entry(lf_ref, textvariable=ra_s_var, width=6).grid(row=2, column=5, sticky=tk.W, padx=2)
+    ttk.Label(lf_ref, text="s").grid(row=2, column=6, sticky=tk.W, padx=0)
+    
+    # Dec boxes
+    ttk.Label(lf_ref, text="Dec:").grid(row=3, column=0, sticky=tk.E, padx=(10, 2), pady=5)
+    dec_d_var = tk.StringVar(value="+43")
+    ttk.Entry(lf_ref, textvariable=dec_d_var, width=4).grid(row=3, column=1, sticky=tk.W, padx=2)
+    ttk.Label(lf_ref, text="d").grid(row=3, column=2, sticky=tk.W, padx=0)
+    dec_m_var = tk.StringVar(value="30")
+    ttk.Entry(lf_ref, textvariable=dec_m_var, width=4).grid(row=3, column=3, sticky=tk.W, padx=2)
+    ttk.Label(lf_ref, text="m").grid(row=3, column=4, sticky=tk.W, padx=0)
+    dec_s_var = tk.StringVar(value="00.0")
+    ttk.Entry(lf_ref, textvariable=dec_s_var, width=6).grid(row=3, column=5, sticky=tk.W, padx=2)
+    ttk.Label(lf_ref, text="s").grid(row=3, column=6, sticky=tk.W, padx=0)
+    
+    def toggle_ref_entries(*args):
+        state = tk.NORMAL if ref_mode_var.get() == "manual" else tk.DISABLED
+        for child in lf_ref.winfo_children():
+            if isinstance(child, ttk.Entry):
+                child.config(state=state)
+    
+    ref_mode_var.trace("w", toggle_ref_entries)
+    toggle_ref_entries()
     def load_color_coefficients():
         import json
         json_path = os.path.join("photometry_output", "color_coefficients.json")
@@ -393,10 +442,26 @@ def run_config_gui(pipeline_callback=None):
             diff_status_var.set("Running differential photometry...")
             root.update_idletasks()
             
+            manual_coord = None
+            if ref_mode_var.get() == "manual":
+                ra_str = f"{ra_h_var.get()}h{ra_m_var.get()}m{ra_s_var.get()}s"
+                dec_str = f"{dec_d_var.get()}d{dec_m_var.get()}m{dec_s_var.get()}s"
+                from astropy.coordinates import SkyCoord
+                import astropy.units as u
+                try:
+                    c = SkyCoord(f"{ra_str} {dec_str}")
+                    manual_coord = (c.ra.deg, c.dec.deg)
+                except Exception as e:
+                    messagebox.showerror("Coordinate Error", f"Invalid manual coordinates format.\n{e}")
+                    diff_status_var.set("Error: Invalid manual coordinates.")
+                    return
+            
             res = run_differential_photometry(
                 csv_b=b_csv, csv_v=v_csv, ref_catalog=cat_type,
                 k_b=diff_kb_var.get(), k_v=diff_kv_var.get(),
-                Tbv=diff_tbv_var.get(), Tb_bv=diff_tbbv_var.get(), Tv_bv=diff_tvbv_var.get()
+                Tbv=diff_tbv_var.get(), Tb_bv=diff_tbbv_var.get(), Tv_bv=diff_tvbv_var.get(),
+                radius_arcmin=float(vars_dict["catalog_search_radius"][0].get()),
+                manual_ref_coord=manual_coord
             )
             diff_status_var.set(res)
         except Exception as e:
@@ -437,8 +502,9 @@ def run_config_gui(pipeline_callback=None):
     add_entry(lf_cal, "Match Tolerance (arcsec):", "match_tolerance_arcsec", 8.0, 0)
     add_entry(lf_cal, "Default Zero Point:", "default_zero_point", 24.0, 1)
     add_entry(lf_cal, "Min SNR for Calib:", "calib_snr_threshold", 10.0, 2)
-    add_check(lf_cal, "Run New ZP Calibration (Overwrite Default)", "run_new_calibration", True, 3)
-    add_check(lf_cal, "Run Positional Shift Analysis", "run_shift_analysis", False, 4)
+    add_entry(lf_cal, "Catalog Search Radius (arcmin):", "catalog_search_radius", 15.0, 3)
+    add_check(lf_cal, "Run New ZP Calibration (Overwrite Default)", "run_new_calibration", True, 4)
+    add_check(lf_cal, "Run Positional Shift Analysis", "run_shift_analysis", False, 5)
 
     # --- TAB 4: Output & Displays ---
     tab_out = ttk.Frame(notebook)
@@ -522,6 +588,7 @@ def run_config_gui(pipeline_callback=None):
                 'match_tolerance_arcsec': vars_vals.pop('match_tolerance_arcsec'),
                 'default_zero_point': vars_vals.pop('default_zero_point'),
                 'calib_snr_threshold': vars_vals.pop('calib_snr_threshold'),
+                'catalog_search_radius': vars_vals.pop('catalog_search_radius'),
                 'run_new_calibration': vars_vals.pop('run_new_calibration'),
                 'run_shift_analysis': vars_vals.pop('run_shift_analysis'),
                 'ccd_gain': vars_vals.pop('ccd_gain'),

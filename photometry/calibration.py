@@ -84,6 +84,14 @@ def fetch_online_catalog(ra_deg, dec_deg, radius_arcmin=15, catalog_name="ATLAS"
         cols = table.colnames
         for row in table:
             try:
+                # Handle masked elements from VizieR to avoid UserWarnings
+                def get_val(col):
+                    if col not in cols: return np.nan
+                    val = row[col]
+                    if np.ma.is_masked(val): return np.nan
+                    try: return float(val)
+                    except: return np.nan
+
                 if catalog_name == "ATLAS":
                     ra = float(row['RA_ICRS'])
                     dec = float(row['DE_ICRS'])
@@ -92,11 +100,6 @@ def fetch_online_catalog(ra_deg, dec_deg, radius_arcmin=15, catalog_name="ATLAS"
                     
                     if not np.isnan(g) and not np.isnan(r):
                         color = g - r
-                        # Jester et al. (2005) transformations (Stars, g-r < 2.1)
-                        # Often used in software like ASTAP/MuniWin as the default for ATLAS
-                        #v_mag = g - 0.011 - 0.487 * color
-                        #b_mag = g + 0.202 + 0.473 * color
-                        
                         # Alternative: Kostov et al. (2017) - Specific for Pan-STARRS1
                         v_mag = g - 0.020 - 0.498 * color - 0.008 * (color**2)
                         b_mag = g + 0.199 + 0.540 * color + 0.016 * (color**2)
@@ -107,15 +110,7 @@ def fetch_online_catalog(ra_deg, dec_deg, radius_arcmin=15, catalog_name="ATLAS"
                     if 'Vmag' in cols and not np.isnan(float(row['Vmag'])): v_mag = float(row['Vmag'])
                     if 'Bmag' in cols and not np.isnan(float(row['Bmag'])): b_mag = float(row['Bmag'])
 
-                # Handle masked elements from VizieR to avoid UserWarnings
-                def get_val(col):
-                    if col not in cols: return np.nan
-                    val = row[col]
-                    if np.ma.is_masked(val): return np.nan
-                    try: return float(val)
-                    except: return np.nan
-
-                if catalog_name == "GAIA_DR3":
+                elif catalog_name == "GAIA_DR3":
                     ra = float(row['RA_ICRS'])
                     dec = float(row['DE_ICRS'])
                 
@@ -125,16 +120,8 @@ def fetch_online_catalog(ra_deg, dec_deg, radius_arcmin=15, catalog_name="ATLAS"
                 
                     if not np.isnan(g) and not np.isnan(bp) and not np.isnan(rp):
                         c = bp - rp
-                        # Riello et al. (2021) Table C.2; or better Table 5.9 in
-                        # https://gea.esac.esa.int/archive/documentation/GDR3/Data_processing/chap_cu5pho/cu5pho_sec_photSystem/cu5pho_ssec_photRelations.html
-                        # G - V = -0.02704 + 0.01424 * c - 0.2156 * c^2 + 0.01426 * c^3
-                        # V = G - (G - V)
                         v_mag = g + 0.02704 - 0.01424 * c + 0.2156 * (c**2) - 0.01426 * (c**3)
-                    
-                        # G - B = +0.01448 - 0.6874 * c - 0.3604 * c^2 + 0.06718 * c^3 - 0.006061 * c^4
-                        # B = G - (G - B)
                         b_mag = g - 0.01448 + 0.6874 * c + 0.3604 * (c**2) - 0.06718 * (c**3) + 0.006061 * (c**4)
-
                     else:
                         v_mag = np.nan
                         b_mag = np.nan
@@ -143,22 +130,14 @@ def fetch_online_catalog(ra_deg, dec_deg, radius_arcmin=15, catalog_name="ATLAS"
                     ra = float(row['_RAJ2000']) if '_RAJ2000' in cols else float(row['RAJ2000'])
                     dec = float(row['_DEJ2000']) if '_DEJ2000' in cols else float(row['DEJ2000'])
                 
-                    # Check for alternative column names across the different Landolt catalogs
-                    if 'Vmag' in cols:
-                        v_mag = get_val('Vmag')
-                    elif '<Vmag>' in cols:
-                        v_mag = get_val('<Vmag>')
-                    else:
-                        v_mag = np.nan
+                    if 'Vmag' in cols: v_mag = get_val('Vmag')
+                    elif '<Vmag>' in cols: v_mag = get_val('<Vmag>')
+                    else: v_mag = np.nan
                     
-                    if 'B-V' in cols:
-                        b_v = get_val('B-V')
-                    elif '<B-V>' in cols:
-                        b_v = get_val('<B-V>')
-                    else:
-                        b_v = np.nan
+                    if 'B-V' in cols: b_v = get_val('B-V')
+                    elif '<B-V>' in cols: b_v = get_val('<B-V>')
+                    else: b_v = np.nan
                     
-                    # The catalogs provide V and B-V. Compute B directly.
                     b_mag = v_mag + b_v if not np.isnan(v_mag) and not np.isnan(b_v) else np.nan
 
                 else: # Default/APASS
@@ -303,7 +282,7 @@ def get_ref_stars(ref_catalog_file, center_ra=None, center_dec=None, radius_arcm
 def match_and_calibrate(results, ref_catalog_file, filter_name, tolerance_arcsec=2.0, 
                         default_zp=23.399, run_new_calibration=True, output_report=None,
                         center_ra=None, center_dec=None, snr_threshold=10.0,
-                        print_to_console=True, header=None):
+                        print_to_console=True, header=None, radius_arcmin=15.0):
     print("\n=================================================================")
     print("--- 4. Zero Point Calibration ---")
     print("=================================================================\n")
@@ -326,8 +305,7 @@ def match_and_calibrate(results, ref_catalog_file, filter_name, tolerance_arcsec
                 rs['mag_calibrated'] = np.nan
                 rs['mag_calibrated_err'] = np.nan
         return
-        
-    ref_stars = get_ref_stars(ref_catalog_file, center_ra, center_dec, verbose=print_to_console)
+    ref_stars = get_ref_stars(ref_catalog_file, center_ra, center_dec, radius_arcmin=radius_arcmin, verbose=print_to_console)
 
     if not ref_stars:
         print(f"WARNING: No reference stars loaded. Applying default Zero Point: {default_zp:.3f}")
@@ -403,8 +381,8 @@ def match_and_calibrate(results, ref_catalog_file, filter_name, tolerance_arcsec
     report_lines.append(f"- **Calibration Filter**: {filter_name}")
     airmass_val = header.get('AIRMASS', 1.0) if header else 1.0
     report_lines.append(f"- **Airmass**: {airmass_val:.3f}\n")
-    report_lines.append(f"| Match ID | Catalog RA/Dec (HMS/DMS) | V mag | B mag | B-V | Inst Mag | Airmass | Zero Point |")
-    report_lines.append(f"| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
+    report_lines.append(f"| Match ID | Catalog RA/Dec (HMS/DMS) | V mag | B mag | B-V | Inst Mag | Zero Point |")
+    report_lines.append(f"| :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
     
     zps = []
     matched_ref_stars = [ref_stars[i] for i in idx[match_mask]]
@@ -429,7 +407,7 @@ def match_and_calibrate(results, ref_catalog_file, filter_name, tolerance_arcsec
         if print_to_console:
             print(f"  Match: {det_rs['id']} (SNR: {snr:.1f}) -> ZP: {zp:.3f} (Ref {mag_key}: {mag_ref:.3f}, Inst: {mag_inst:.3f})")
         
-        report_lines.append(f"| {det_rs['id']} | {coord_str} | {v_mag:.3f} | {b_mag:.3f} | {bv:+.3f} | {mag_inst:.3f} | {airmass_val:.3f} | **{zp:.3f}** |")
+        report_lines.append(f"| {det_rs['id']} | {coord_str} | {v_mag:.3f} | {b_mag:.3f} | {bv:+.3f} | {mag_inst:.3f} | **{zp:.3f}** |")
         
     zps = np.array(zps)
     mean_zp, median_zp, std_zp = sigma_clipped_stats(zps, sigma=3.0, maxiters=5)
