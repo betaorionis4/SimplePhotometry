@@ -611,7 +611,7 @@ def run_config_gui(pipeline_callback=None):
     lf_ts_io.pack(fill="x", padx=10, pady=10)
     
     ttk.Label(lf_ts_io, text="FITS File Pattern:").grid(row=0, column=0, sticky=tk.W, padx=10, pady=5)
-    ts_pattern_var = tk.StringVar(value="fitsfiles/*.fits")
+    ts_pattern_var = tk.StringVar(value="C:\\Astro\\Photometry_Calibra\\fitsfiles\\*.fits")
     vars_dict["ts_pattern"] = (ts_pattern_var, str)
     ttk.Entry(lf_ts_io, textvariable=ts_pattern_var, width=50).grid(row=0, column=1, columnspan=3, sticky=tk.W, padx=10, pady=5)
     
@@ -626,9 +626,84 @@ def run_config_gui(pipeline_callback=None):
     
     ts_ref_mode_var = tk.StringVar(value="name")
     ttk.Radiobutton(lf_ts_ref, text="Resolve Name", variable=ts_ref_mode_var, value="name").grid(row=0, column=0, sticky=tk.W, padx=10, pady=5)
-    ts_ref_name_var = tk.StringVar(value="TYC 3031-137-1")
+    ts_ref_name_var = tk.StringVar(value="TYC 2998 1249")
     ttk.Entry(lf_ts_ref, textvariable=ts_ref_name_var, width=20).grid(row=0, column=1, sticky=tk.W, padx=2)
     
+    from astropy.coordinates import SkyCoord
+    import astropy.units as u
+
+    def get_coords_ts(mode, name, ra_s, dec_s):
+        if mode == "name":
+            return SkyCoord.from_name(name)
+        else:
+            return SkyCoord(f"{ra_s} {dec_s}", unit=(u.hourangle, u.deg))
+
+    def on_check_ref_ts():
+        name = ts_ref_name_var.get().strip()
+        if not name: return
+        ts_status_var.set("Resolving reference...")
+        root.update_idletasks()
+        try:
+            c = SkyCoord.from_name(name)
+            ra_hms = c.ra.to_string(unit='hour', sep=':', precision=1)
+            dec_dms = c.dec.to_string(unit='degree', sep=':', precision=1, alwayssign=True)
+            ts_status_var.set(f"Ref resolved: {ra_hms}, {dec_dms}")
+        except:
+            ts_status_var.set("Ref resolution failed.")
+
+    ttk.Button(lf_ts_ref, text="Check", command=on_check_ref_ts, width=6).grid(row=0, column=2, sticky=tk.W, padx=2)
+    
+    from astropy.coordinates import SkyCoord
+    import astropy.units as u
+
+    def get_coords_ts(mode, name, ra_s, dec_s):
+        if mode == "name":
+            return SkyCoord.from_name(name)
+        else:
+            return SkyCoord(f"{ra_s} {dec_s}", unit=(u.hourangle, u.deg))
+
+    def on_fetch_ref_mag():
+        ts_status_var.set("Resolving reference coordinates...")
+        root.update_idletasks()
+        try:
+            ref_c = get_coords_ts(ts_ref_mode_var.get(), ts_ref_name_var.get(), ts_ref_ra_var.get(), ts_ref_dec_var.get())
+        except Exception as e:
+            messagebox.showerror("Coord Error", f"Could not resolve coordinates: {e}")
+            ts_status_var.set("Coord resolution failed.")
+            return
+
+        cat_name = vars_dict["reference_catalog"][0].get()
+        ts_status_var.set(f"Fetching data from {cat_name}...")
+        root.update_idletasks()
+        
+        from photometry.calibration import fetch_online_catalog
+        try:
+            stars = fetch_online_catalog(ref_c.ra.deg, ref_c.dec.deg, radius_arcmin=2.0, catalog_name=cat_name)
+            if not stars:
+                ts_status_var.set("No stars found in catalog at this location.")
+                return
+            
+            cat_coords = SkyCoord([s['ra_deg'] for s in stars], [s['dec_deg'] for s in stars], unit=u.deg)
+            idx, d2d, _ = ref_c.match_to_catalog_sky(cat_coords)
+            
+            if d2d.arcsec > 10.0:
+                ts_status_var.set(f"Nearest star is {d2d.arcsec:.1f}\" away. No match.")
+                return
+                
+            star = stars[idx]
+            filt = ts_filter_var.get().upper()
+            mag = star['B_mag'] if filt == 'B' else star['V_mag']
+            bv = star['B_mag'] - star['V_mag']
+            
+            ts_ref_mag_var.set(round(mag, 3))
+            ts_ref_bv_var.set(round(bv, 3))
+            ts_status_var.set(f"Fetched Mag={mag:.3f}, B-V={bv:.3f} from {cat_name}.")
+            print(f"Update: Reference star magnitude set to {mag:.3f} and B-V to {bv:.3f} from catalog {cat_name}.")
+        except Exception as e:
+            ts_status_var.set(f"Catalog fetch failed: {e}")
+
+    ttk.Button(lf_ts_ref, text="Fetch Mag from Catalog", command=on_fetch_ref_mag).grid(row=0, column=3, sticky=tk.W, padx=10)
+
     ttk.Radiobutton(lf_ts_ref, text="Manual RA/Dec", variable=ts_ref_mode_var, value="manual").grid(row=1, column=0, sticky=tk.W, padx=10, pady=5)
     ts_ref_ra_var = tk.StringVar(value="14:34:00")
     ts_ref_dec_var = tk.StringVar(value="+43:30:00")
@@ -653,6 +728,21 @@ def run_config_gui(pipeline_callback=None):
     ttk.Radiobutton(lf_ts_target, text="Resolve Name", variable=ts_target_mode_var, value="name").grid(row=0, column=0, sticky=tk.W, padx=10, pady=5)
     ts_target_name_var = tk.StringVar(value="AE UMa")
     ttk.Entry(lf_ts_target, textvariable=ts_target_name_var, width=20).grid(row=0, column=1, sticky=tk.W, padx=2)
+
+    def on_check_target_ts():
+        name = ts_target_name_var.get().strip()
+        if not name: return
+        ts_status_var.set("Resolving target...")
+        root.update_idletasks()
+        try:
+            c = SkyCoord.from_name(name)
+            ra_hms = c.ra.to_string(unit='hour', sep=':', precision=1)
+            dec_dms = c.dec.to_string(unit='degree', sep=':', precision=1, alwayssign=True)
+            ts_status_var.set(f"Target resolved: {ra_hms}, {dec_dms}")
+        except:
+            ts_status_var.set("Target resolution failed.")
+
+    ttk.Button(lf_ts_target, text="Check", command=on_check_target_ts, width=6).grid(row=0, column=2, sticky=tk.W, padx=2)
     
     ttk.Radiobutton(lf_ts_target, text="Manual RA/Dec", variable=ts_target_mode_var, value="manual").grid(row=1, column=0, sticky=tk.W, padx=10, pady=5)
     ts_target_ra_var = tk.StringVar(value="14:34:00")
@@ -685,14 +775,37 @@ def run_config_gui(pipeline_callback=None):
     ttk.Entry(lf_ts_coeff, textvariable=ts_obs_var, width=10).grid(row=1, column=1, sticky=tk.W, padx=2)
     
     ttk.Label(lf_ts_coeff, text="Site Lat:").grid(row=1, column=2, sticky=tk.W, padx=10, pady=2)
-    ts_lat_var = tk.DoubleVar(value=0.0)
+    ts_lat_var = tk.DoubleVar(value=59.8)
     vars_dict["ts_lat"] = (ts_lat_var, float)
     ttk.Entry(lf_ts_coeff, textvariable=ts_lat_var, width=10).grid(row=1, column=3, sticky=tk.W, padx=2)
     
     ttk.Label(lf_ts_coeff, text="Site Long:").grid(row=2, column=0, sticky=tk.W, padx=10, pady=2)
-    ts_lon_var = tk.DoubleVar(value=0.0)
+    ts_lon_var = tk.DoubleVar(value=17.6)
     vars_dict["ts_lon"] = (ts_lon_var, float)
     ttk.Entry(lf_ts_coeff, textvariable=ts_lon_var, width=10).grid(row=2, column=1, sticky=tk.W, padx=2)
+
+    def load_ts_coefficients():
+        import json
+        json_path = os.path.join("photometry_output", "color_coefficients.json")
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, 'r') as f:
+                    coeffs = json.load(f)
+                filt = ts_filter_var.get().upper()
+                if filt == 'B':
+                    val = coeffs.get('Tb_bv', 0.0)
+                    key_name = 'Tb_bv'
+                else:
+                    val = coeffs.get('Tv_bv', 0.0)
+                    key_name = 'Tv_bv'
+                ts_coeff_var.set(val)
+                ts_status_var.set(f"Loaded {key_name} for {filt} filter.")
+            except Exception as e:
+                ts_status_var.set(f"Error loading JSON: {e}")
+        else:
+            ts_status_var.set("No coefficients file found.")
+            
+    tk.Button(lf_ts_coeff, text="Load Last Coeffs", command=load_ts_coefficients).grid(row=2, column=2, columnspan=2, pady=5)
 
     ts_status_var = tk.StringVar(value="Ready to process sequence.")
     ttk.Label(ts_container, textvariable=ts_status_var, font=("Arial", 9, "italic")).pack(pady=5)
@@ -704,7 +817,11 @@ def run_config_gui(pipeline_callback=None):
         if not files:
             messagebox.showerror("Error", f"No files found matching: {pattern}")
             return
-        
+            
+        if ts_ref_mag_var.get() == 10.0 and ts_ref_mode_var.get() == "name":
+            if not messagebox.askyesno("Warning", "Reference magnitude is still set to the default (10.0). Did you forget to click 'Fetch Mag from Catalog'?\n\nContinue anyway?"):
+                return
+
         ts_status_var.set("Resolving coordinates...")
         root.update_idletasks()
         

@@ -168,6 +168,16 @@ def run_time_series_photometry(fits_files, target_ra, target_dec, ref_ra, ref_de
                     
                     # V_target_std = v_target_corr + Tv_bv * (B-V)_target + ZV
                     v_target_std = v_target_corr + coeff_term * target_bv + zv
+
+                    if i < 5:
+                        print(f"\n--- Diagnostic (Image {i+1}: {os.path.basename(fpath)}) ---")
+                        print(f"  Target Inst: {target_res['mag_inst']:.4f} | Corr: {v_target_corr:.4f}")
+                        print(f"  Ref Inst:    {ref_res['mag_inst']:.4f} | Corr: {v_ref_corr:.4f}")
+                        print(f"  Ref Std:     {ref_mag_std:.4f} | B-V: {ref_bv:.4f}")
+                        print(f"  Zero Point:  {zv:.4f}")
+                        print(f"  Color Term:  {coeff_term:.4f} * {target_bv:.4f} = {coeff_term * target_bv:.4f}")
+                        print(f"  FINAL MAG:   {v_target_std:.4f}")
+                        print("------------------------------------------------------\n")
                     
                     results.append({
                         'file': os.path.basename(fpath),
