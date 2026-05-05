@@ -1,6 +1,6 @@
 # Calibra: Automated Photometric Analysis & Calibration Toolkit
 
-**Version:** 1.5 - 2026-05-04
+**Version:** 1.4 - 2026-05-05
 **Description:** 
 An automated, highly robust Python toolkit for extracting scientific-grade photometry, calibrating zero points, obtaining color transformations coefficients for V and B filters, and estimating formal CCD/CMOS errors from astronomical monochrome FITS images. The toolkit features a **Differential Photometry** module for computing standard magnitudes and integrates **AAVSO VSX** cross-matching to automatically exclude known variable stars from calibration sets.
 
