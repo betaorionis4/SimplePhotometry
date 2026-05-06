@@ -1,7 +1,5 @@
 import os
 import numpy as np
-import matplotlib
-matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from astropy.coordinates import SkyCoord
 import astropy.units as u
@@ -40,7 +38,7 @@ def perform_robust_fit(x, y, sigma_clip=2.0):
     
     return res2, mask, std_dev_final, res1, std_dev
 
-def derive_color_terms(results_b, results_v, catalog_stars, output_dir, airmass_b=1.0, airmass_v=1.0, k_b=0.35, k_v=0.20):
+def derive_color_terms(results_b, results_v, catalog_stars, output_dir, airmass_b=1.0, airmass_v=1.0, k_b=0.35, k_v=0.20, axes=None):
     """
     Derives instrumental color terms by cross-matching B and V photometry results.
     results_b/v: list of dicts from process_file
@@ -139,8 +137,13 @@ def derive_color_terms(results_b, results_v, catalog_stars, output_dir, airmass_
     res_eps, mask_eps, std_eps, res1_eps, std1_eps = perform_robust_fit(c_cat, dv)
 
     # 4. Generate Plots
-    plt.style.use('bmh')
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    if axes is None:
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        is_standalone = True
+    else:
+        fig = axes[0].figure
+        for ax in axes: ax.clear()
+        is_standalone = False
     
     def plot_fit(ax, x, y, mask, res, std, res1, std1, xlabel, ylabel, title, label_pref):
         # Plot Outliers
@@ -149,21 +152,22 @@ def derive_color_terms(results_b, results_v, catalog_stars, output_dir, airmass_
         ax.scatter(x[mask], y[mask], color='blue', alpha=0.6, label='Data Points')
         
         # Plot 1st iteration window (just outer lines)
-        x_fit = np.linspace(min(x), max(x), 100)
-        y_fit1 = res1.slope * x_fit + res1.intercept
-        ax.plot(x_fit, y_fit1 + 2*std1, color='r', linestyle=':', alpha=0.4, linewidth=1, label='Initial 2$\sigma$')
-        ax.plot(x_fit, y_fit1 - 2*std1, color='r', linestyle=':', alpha=0.4, linewidth=1)
+        if len(x) > 0:
+            x_fit = np.linspace(min(x), max(x), 100)
+            y_fit1 = res1.slope * x_fit + res1.intercept
+            ax.plot(x_fit, y_fit1 + 2*std1, color='r', linestyle=':', alpha=0.4, linewidth=1, label='Initial 2σ')
+            ax.plot(x_fit, y_fit1 - 2*std1, color='r', linestyle=':', alpha=0.4, linewidth=1)
 
-        # Plot Final Fit
-        y_fit = res.slope * x_fit + res.intercept
-        ax.plot(x_fit, y_fit, 'k-', linewidth=2, label=f'Final {label_pref}={res.slope:.3f}')
-        
-        # Plot 2-sigma window (use the std from the final fit)
-        ax.plot(x_fit, y_fit + 2*std, color='#555', linestyle='--', alpha=0.8, linewidth=1, label=r'Final $\pm$2$\sigma$')
-        ax.plot(x_fit, y_fit - 2*std, color='#555', linestyle='--', alpha=0.8, linewidth=1)
-        
-        # Add fill for the window to make it obvious
-        ax.fill_between(x_fit, y_fit - 2*std, y_fit + 2*std, color='gray', alpha=0.1)
+            # Plot Final Fit
+            y_fit = res.slope * x_fit + res.intercept
+            ax.plot(x_fit, y_fit, 'k-', linewidth=2, label=f'Final {label_pref}={res.slope:.3f}')
+            
+            # Plot 2-sigma window (use the std from the final fit)
+            ax.plot(x_fit, y_fit + 2*std, color='#555', linestyle='--', alpha=0.8, linewidth=1, label=r'Final ±2σ')
+            ax.plot(x_fit, y_fit - 2*std, color='#555', linestyle='--', alpha=0.8, linewidth=1)
+            
+            # Add fill for the window to make it obvious
+            ax.fill_between(x_fit, y_fit - 2*std, y_fit + 2*std, color='gray', alpha=0.1)
         
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
@@ -179,10 +183,13 @@ def derive_color_terms(results_b, results_v, catalog_stars, output_dir, airmass_
     plot_fit(axes[2], c_cat, dv, mask_eps, res_eps, std_eps, res1_eps, std1_eps,
              "(B-V) Catalog", "V_cat - v_corr", "V-Filter Color Term", "eps")
     
-    plt.tight_layout()
+    fig.tight_layout()
     plot_path = os.path.join(output_dir, "color_plots.png")
-    plt.savefig(plot_path)
-    plt.close()
+    if is_standalone:
+        plt.savefig(plot_path)
+        plt.close(fig)
+    else:
+        fig.savefig(plot_path)
 
     # 5. Write Report
     with open(report_path, "w") as f:

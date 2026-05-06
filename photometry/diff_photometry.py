@@ -1,9 +1,6 @@
 import os
 import csv
 import numpy as np
-import matplotlib
-# Setting the backend to 'Agg' tells matplotlib to render plots to files (like PNGs) instead of opening interactive windows. This is crucial for automated scripts.
-matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from scipy.stats import norm
 # 'SkyCoord' from astropy is a powerful object used to represent, manipulate, and transform celestial coordinates.
@@ -45,7 +42,7 @@ def compute_target_BV(b_t, v_t, XB_t, XV_t, Tbv, Tb_bv, Tv_bv, Z_BV, Z_B, Z_V, k
     V_t = v0_t + Tv_bv * BV_t + Z_V
     return B_t, V_t, BV_t
 
-def run_differential_photometry(csv_b, csv_v, ref_catalog, k_b, k_v, Tbv, Tb_bv, Tv_bv, radius_arcmin=15.0, manual_ref_coord=None, target_mode='all', manual_target_coord=None):
+def run_differential_photometry(csv_b, csv_v, ref_catalog, k_b, k_v, Tbv, Tb_bv, Tv_bv, radius_arcmin=15.0, manual_ref_coord=None, target_mode='all', manual_target_coord=None, axes=None):
     """
     Reads two CSVs (B and V), matches the stars, selects a reference star,
     and applies differential photometry to all common stars.
@@ -358,12 +355,14 @@ def run_differential_photometry(csv_b, csv_v, ref_catalog, k_b, k_v, Tbv, Tb_bv,
             mu_BV, std_BV = norm.fit(dBV)
             
             # Plotting
-            # 'os.makedirs' with 'exist_ok=True' creates a directory, but won't crash if the directory already exists.
-            os.makedirs('photometry_plots', exist_ok=True)
-            # 'plt.subplots(1, 3)' creates a figure containing 1 row and 3 columns of subplots.
-            # It returns the overall Figure object, and an array of the individual Axes.
-            fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-            fig.suptitle('Differential Photometry Accuracy vs Catalog', fontsize=16)
+            if axes is None:
+                fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+                fig.suptitle('Differential Photometry Accuracy vs Catalog', fontsize=16)
+                is_standalone = True
+            else:
+                fig = axes[0].figure
+                for ax in axes: ax.clear()
+                is_standalone = False
             
             def plot_hist(ax, data, mu, std, title, xlabel):
                 n, bins, patches = ax.hist(data, bins='auto', density=True, alpha=0.6, color='steelblue')
@@ -380,10 +379,14 @@ def run_differential_photometry(csv_b, csv_v, ref_catalog, k_b, k_v, Tbv, Tb_bv,
             plot_hist(axes[1], dV, mu_V, std_V, '$\\Delta V$', '$\\Delta V$ [mag]')
             plot_hist(axes[2], dBV, mu_BV, std_BV, '$\\Delta(B-V)$', '$\\Delta(B-V)$ [mag]')
             
-            plt.tight_layout()
+            fig.tight_layout()
+            os.makedirs('photometry_plots', exist_ok=True)
             plot_path = os.path.join('photometry_plots', 'diff_photometry_deviations.png')
-            plt.savefig(plot_path)
-            plt.close(fig)
+            if is_standalone:
+                plt.savefig(plot_path)
+                plt.close(fig)
+            else:
+                fig.savefig(plot_path)
             
             # Append to report
             with open(out_md_report, 'a') as f:
