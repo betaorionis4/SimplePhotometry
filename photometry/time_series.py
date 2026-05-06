@@ -147,12 +147,20 @@ def run_time_series_photometry(fits_files, target_ra, target_dec,
                 lon = header.get('SITELONG', site_long)
                 
                 # 1. Timing and Airmass
-                jd = header.get('JD') or header.get('MJD', 0) + 2400000.5
+                jd = header.get('JD')
+                if not jd:
+                    mjd = header.get('MJD')
+                    if mjd is not None:
+                        jd = mjd + 2400000.5
+                
                 if not jd:
                     t_obs = header.get('DATE-OBS')
                     if t_obs:
-                        try: jd = Time(t_obs).jd
-                        except: jd = 0
+                        try:
+                            from astropy.time import Time
+                            jd = Time(t_obs).jd
+                        except:
+                            jd = 0
                 
                 hjd = get_hjd(None, target_ra, target_dec, header, lat, lon) or jd
                 airmass = header.get('AIRMASS', 1.0)
