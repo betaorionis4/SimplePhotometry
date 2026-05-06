@@ -1,8 +1,6 @@
 import os
 import csv
 import numpy as np
-import matplotlib
-matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from astropy.io import fits
 from astropy.coordinates import SkyCoord, EarthLocation
@@ -99,13 +97,15 @@ def measure_star(image_data, wcs, ra, dec, aperture_radius, annulus_inner, annul
         print(f"Error measuring star at {ra}, {dec}: {e}")
         return None
 
-def run_time_series_photometry(fits_files, target_ra, target_dec, ref_ra, ref_dec,
-                               ref_mag_std, ref_bv, target_bv,
+def run_time_series_photometry(fits_files, target_ra, target_dec, 
+                               ensemble_stars, # List of dicts: {'ra', 'dec', 'mag_std', 'bv_std', 'name'}
+                               target_bv,
                                coeff_term, coeff_color, 
                                aperture_radius, annulus_inner, annulus_outer,
                                gain=1.0, k_coeff=0.15, filter_name='V',
                                observer_name="Calibra User",
-                               site_lat=0.0, site_long=0.0):
+                               site_lat=0.0, site_long=0.0,
+                               cancel_event=None, update_progress=None):
     """
     Main loop for time-series photometry.
     """
@@ -119,6 +119,13 @@ def run_time_series_photometry(fits_files, target_ra, target_dec, ref_ra, ref_de
     print(f"Starting time-series analysis on {len(fits_files)} files...")
     
     for i, fpath in enumerate(fits_files):
+        if cancel_event and cancel_event.is_set():
+            print("Operation cancelled by user.")
+            break
+
+        if update_progress:
+            update_progress((i / len(fits_files)) * 100)
+            
         try:
             with fits.open(fpath) as hdul:
                 header = hdul[0].header
@@ -140,43 +147,69 @@ def run_time_series_photometry(fits_files, target_ra, target_dec, ref_ra, ref_de
                 lon = header.get('SITELONG', site_long)
                 
                 # 1. Timing and Airmass
-                jd = header.get('JD') or header.get('MJD', 0) + 2400000.5
+                jd = header.get('JD')
+                if not jd:
+                    mjd = header.get('MJD')
+                    if mjd is not None:
+                        jd = mjd + 2400000.5
+                
                 if not jd:
                     t_obs = header.get('DATE-OBS')
                     if t_obs:
-                        try: jd = Time(t_obs).jd
-                        except: jd = 0
+                        try:
+                            from astropy.time import Time
+                            jd = Time(t_obs).jd
+                        except:
+                            jd = 0
                 
                 hjd = get_hjd(None, target_ra, target_dec, header, lat, lon) or jd
                 airmass = header.get('AIRMASS', 1.0)
                 
-                # 2. Measure Target and Reference
+                # 2. Measure Target and Ensemble
                 target_res = measure_star(data, wcs, target_ra, target_dec, aperture_radius, annulus_inner, annulus_outer, gain)
-                ref_res = measure_star(data, wcs, ref_ra, ref_dec, aperture_radius, annulus_inner, annulus_outer, gain)
                 
-                if target_res and ref_res:
-                    if np.isnan(target_res['mag_inst']) or np.isnan(ref_res['mag_inst']):
-                        print(f"  - {os.path.basename(fpath)}: Measurement returned NaN (too faint or saturated?)")
+                ensemble_res = []
+                for s in ensemble_stars:
+                    res = measure_star(data, wcs, s['ra'], s['dec'], aperture_radius, annulus_inner, annulus_outer, gain)
+                    if res and not np.isnan(res['mag_inst']):
+                        # Calculate individual Zero Point for this ref star
+                        # ZV_i = mag_std_i - (mag_inst_corr_i + Tv_bv * bv_std_i)
+                        m_inst_corr = res['mag_inst'] - (k_coeff * airmass)
+                        zv_i = s['mag_std'] - (m_inst_corr + coeff_term * s['bv_std'])
+                        ensemble_res.append({
+                            'name': s['name'],
+                            'zv': zv_i,
+                            'snr': res['snr'],
+                            'mag_err': res['mag_err']
+                        })
+                
+                if target_res and ensemble_res:
+                    if np.isnan(target_res['mag_inst']):
+                        print(f"  - {os.path.basename(fpath)}: Target measurement returned NaN")
                         continue
-                    # 3. Calibration Logic
-                    # m_corr = m_inst - k*X
+                        
+                    # 3. Ensemble Calibration Logic
+                    # We average the zero points from all valid ensemble stars
+                    zvs = [r['zv'] for r in ensemble_res]
+                    zv_avg = np.mean(zvs)
+                    zv_std = np.std(zvs, ddof=1) if len(zvs) > 1 else 0.0
+                    zv_err = zv_std / np.sqrt(len(zvs)) if len(zvs) > 1 else 0.01 # Fallback 0.01 if only 1 star
+                    
+                    # Target Calibration
+                    # V_target_std = v_target_corr + Tv_bv * (B-V)_target + ZV_avg
                     v_target_corr = target_res['mag_inst'] - (k_coeff * airmass)
-                    v_ref_corr = ref_res['mag_inst'] - (k_coeff * airmass)
+                    v_target_std = v_target_corr + coeff_term * target_bv + zv_avg
                     
-                    # ZV = V_ref_std - (v_ref_corr + Tv_bv * (B-V)_ref)
-                    zv = ref_mag_std - (v_ref_corr + coeff_term * ref_bv)
-                    
-                    # V_target_std = v_target_corr + Tv_bv * (B-V)_target + ZV
-                    v_target_std = v_target_corr + coeff_term * target_bv + zv
+                    # Total uncertainty = sqrt(photon_noise^2 + ensemble_zp_error^2)
+                    total_mag_err = np.sqrt(target_res['mag_err']**2 + zv_err**2)
 
-                    if i < 5:
+                    if i < 3:
                         print(f"\n--- Diagnostic (Image {i+1}: {os.path.basename(fpath)}) ---")
                         print(f"  Target Inst: {target_res['mag_inst']:.4f} | Corr: {v_target_corr:.4f}")
-                        print(f"  Ref Inst:    {ref_res['mag_inst']:.4f} | Corr: {v_ref_corr:.4f}")
-                        print(f"  Ref Std:     {ref_mag_std:.4f} | B-V: {ref_bv:.4f}")
-                        print(f"  Zero Point:  {zv:.4f}")
-                        print(f"  Color Term:  {coeff_term:.4f} * {target_bv:.4f} = {coeff_term * target_bv:.4f}")
-                        print(f"  FINAL MAG:   {v_target_std:.4f}")
+                        print(f"  Ensemble ({len(ensemble_res)} stars): ZP_avg = {zv_avg:.4f} +/- {zv_err:.4f} (std={zv_std:.4f})")
+                        for r in ensemble_res:
+                            print(f"    * {r['name']}: ZP={r['zv']:.4f}, SNR={r['snr']:.1f}")
+                        print(f"  FINAL MAG:   {v_target_std:.4f} +/- {total_mag_err:.4f}")
                         print("------------------------------------------------------\n")
                     
                     results.append({
@@ -185,12 +218,15 @@ def run_time_series_photometry(fits_files, target_ra, target_dec, ref_ra, ref_de
                         'hjd': hjd,
                         'airmass': airmass,
                         'mag': v_target_std,
-                        'mag_err': target_res['mag_err'],
-                        'snr': target_res['snr']
+                        'mag_err': total_mag_err,
+                        'snr': target_res['snr'],
+                        'zp_avg': zv_avg,
+                        'zp_err': zv_err,
+                        'n_ensemble': len(ensemble_res)
                     })
                 else:
-                    if not target_res: print(f"  - {os.path.basename(fpath)}: Target star could not be centroided or is off-image.")
-                    if not ref_res: print(f"  - {os.path.basename(fpath)}: Reference star could not be centroided or is off-image.")
+                    if not target_res: print(f"  - {os.path.basename(fpath)}: Target star could not be centroided.")
+                    if not ensemble_res: print(f"  - {os.path.basename(fpath)}: No ensemble stars could be measured.")
                     
             if (i+1) % 10 == 0:
                 print(f"Processed {i+1}/{len(fits_files)} images...")
@@ -198,53 +234,98 @@ def run_time_series_photometry(fits_files, target_ra, target_dec, ref_ra, ref_de
         except Exception as e:
             print(f"Skipping {fpath}: {e}")
 
+    if update_progress:
+        update_progress(100)
+
     if not results:
-        return None, "No data successfully processed."
+        status = "Cancelled." if cancel_event and cancel_event.is_set() else "No data successfully processed."
+        return None, status
         
+    # Phase 6: Outlier Flagging (3-sigma)
+    mags = [r['mag'] for r in results]
+    if len(mags) > 5:
+        median_mag = np.median(mags)
+        std_mag = np.std(mags, ddof=1)
+        for r in results:
+            if abs(r['mag'] - median_mag) > 3 * std_mag:
+                r['flag'] = 'SUSPECT'
+            else:
+                r['flag'] = 'OK'
+    else:
+        for r in results:
+            r['flag'] = 'OK'
+
     # Sort by time
     results.sort(key=lambda x: x['hjd'])
     
     return results, "Success"
 
-def save_aavso_report(results, output_path, target_name, filter_name, obs_code, site_id=""):
+def save_aavso_report(results, output_path, target_name, filter_name, obs_code, 
+                      comp_name="ENSEMBLE", comp_mag="na", check_name="na", check_mag="na",
+                      trans="NO"):
     """ Generates a report in AAVSO Extended Format. """
     try:
         with open(output_path, 'w', newline='') as f:
             f.write("#TYPE=Extended\n")
             f.write(f"#OBSCODE={obs_code}\n")
-            f.write(f"#SOFTWARE=Calibra 1.5\n")
+            f.write(f"#SOFTWARE=Calibra 2.0\n")
             f.write(f"#DELIM=,\n")
             f.write(f"#DATE=HJD\n")
             f.write(f"#OBSTYPE=CCD\n")
+            f.write(f"#TRANS={trans}\n")
             f.write("NAME,DATE,MAG,MERR,FILT,TRANS,MTYPE,CNAME,CMAG,KNAME,KMAG,AMASS,NOTES\n")
             
             for r in results:
                 # Format: Name, Date, Mag, Merr, Filt, Trans, Mtype, Cname, Cmag, Kname, Kmag, Amass, Notes
-                f.write(f"{target_name},{r['hjd']:.6f},{r['mag']:.4f},{r['mag_err']:.4f},{filter_name},NO,STD,na,na,na,na,{r['airmass']:.3f},na\n")
+                f.write(f"{target_name},{r['hjd']:.6f},{r['mag']:.4f},{r['mag_err']:.4f},{filter_name},{trans},STD,{comp_name},{comp_mag},{check_name},{check_mag},{r['airmass']:.3f},na\n")
         return True
     except Exception as e:
         print(f"Error saving AAVSO report: {e}")
         return False
 
-def plot_light_curve(results, target_name, output_path):
-    """ Plots the light curve. """
+def plot_light_curve(results, target_name, output_path, ax=None):
+    """ Plots the light curve. If ax is provided, plots to that axes. """
     if not results: return
     
-    times = [r['hjd'] for r in results]
-    mags = [r['mag'] for r in results]
-    errs = [r['mag_err'] for r in results]
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 6))
+        is_standalone = True
+    else:
+        fig = ax.figure
+        ax.clear()
+        is_standalone = False
+    
+    times = np.array([r['hjd'] for r in results])
+    mags = np.array([r['mag'] for r in results])
+    errs = np.array([r['mag_err'] for r in results])
+    flags = np.array([r.get('flag', 'OK') for r in results])
     
     # JD Offset for readability
     t0 = int(min(times))
-    times_rel = [t - t0 for t in times]
+    times_rel = times - t0
     
-    plt.figure(figsize=(10, 6))
-    plt.errorbar(times_rel, mags, yerr=errs, fmt='o', color='darkblue', ecolor='gray', capsize=2, markersize=4)
-    plt.gca().invert_yaxis() # Magnitudes are inverted
-    plt.title(f"Light Curve: {target_name}")
-    plt.xlabel(f"HJD - {t0}")
-    plt.ylabel("Magnitude")
-    plt.grid(True, alpha=0.3)
+    # Plot OK points
+    ok_mask = (flags == 'OK')
+    if np.any(ok_mask):
+        ax.errorbar(times_rel[ok_mask], mags[ok_mask], yerr=errs[ok_mask], 
+                     fmt='o', color='darkblue', ecolor='gray', capsize=2, markersize=4, label='OK')
     
-    plt.savefig(output_path)
-    plt.close()
+    # Plot SUSPECT points
+    suspect_mask = (flags == 'SUSPECT')
+    if np.any(suspect_mask):
+        ax.errorbar(times_rel[suspect_mask], mags[suspect_mask], yerr=errs[suspect_mask], 
+                     fmt='o', color='none', markeredgecolor='red', ecolor='red', capsize=2, markersize=6, label='SUSPECT (3σ)')
+    
+    ax.invert_yaxis()
+    
+    ax.set_title(f"Light Curve: {target_name}")
+    ax.set_xlabel(f"HJD - {t0}")
+    ax.set_ylabel("Magnitude")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    
+    if is_standalone:
+        plt.savefig(output_path)
+        plt.close(fig)
+    else:
+        fig.savefig(output_path)

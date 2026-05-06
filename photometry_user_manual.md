@@ -1,13 +1,13 @@
 # Photometry with Calibra: Comprehensive User Manual
 
-Welcome to **Calibra** (an automated photometric analysis & calibration toolkit), a professional-grade astronomical image analysis suite. 
+Welcome to **Calibra** (:an automated photometric analysis & calibration toolkit), a professional-grade astronomical image analysis suite. 
 This short manual provides some background on the software's architecture, mathematical principles, and operational workflow.
 
 The code can identify stars, perform PSF fitting to extract fluxes (using aperture photometry), and compares instrumental magnitudes with refernces magnitudes from catalogues available online (e.g. APASS DR9). Note that the provided fits file(s) need to have a WCS (i.e. they need to be plate solved).
 
 Make sure that the code uses the right filter. I use Johnson V and B filters, that are labled 'V_mag' and 'B_mag' by my imaging software - I use N.I.N.A. - in the FITS header.
 
-Future development will be towards using pictures of reference regions taken with both the V and the B filter, and have the code analysze both to extract transformation coeeficients.
+Since v1.5, Calibra supports automated color transformation calibration using paired B/V images. In v2.0, ensemble time-series photometry with multiple comparison stars and AAVSO-format light curve reporting were added.
 
 Useful background information on the latter and lots of other useful information is provided by the AAVSO Guide to CCD/CMOS Photometry (available for free via aavso.org).
 
@@ -201,33 +201,91 @@ To evaluate the calibration quality, the pipeline automatically compares the int
 
 ---
 
-## 5. Running the Pipeline: The Configuration GUI
+## 5. Time-Series Photometry & Light Curves
 
-Launch the pipeline via `python main.py` to open the **Configuration GUI**.
+The Light Curves module performs **ensemble differential time-series photometry** on a sequence of FITS images to produce calibrated light curves of variable stars.
 
-1.  **I/O & Filtering Tab**: Define input file patterns (e.g., `fitsfiles/*.fits`) and restrict analysis to specific pixel or RA/DEC windows.
-2.  **Camera & Detection Tab**: Input your sensor's specific **Gain** and **Read Noise**. These are mandatory for accurate error bars.
-3.  **Photometry & Calibration Tab**: 
-    - Set your aperture radii (rule of thumb: $\approx 2 \times FWHM$).
-    - Select your **Ref Catalog**: Choose **ATLAS** (ATLAS-RefCat2), **APASS** (DR9), or **GAIA_DR3** for online calibration, or select a local CSV.
-    - Set **Catalog Search Radius (arcmin)**: Set this to encompass your Field of View. This dictates how much catalog data is pulled from VizieR for Zero-Point and Differential operations.
-    - Set **Min SNR for Calib**: Filter out noisy stars from the zero-point calculation (default 10.0).
-    - **Print Detailed Calibration**: Toggle the individual "Match" logs in the console. (Summary always shown).
-    - Enable/disable diagnostic plots and massive data tables.
-4.  **Color Calibration Tab**: 
-    - **Auto-Hand-off**: After running a B and V image, these fields will auto-populate with the correct CSV paths.
-    - **Extinction Correction**: Enter or verify the k-coefficients ($k_B, k_V$) and airmass.
-    - Click **"Run Color Transformation Analysis"** to calculate your equipment's color terms.
-5.  **Differential Photometry Tab**:
-    - **Auto-Fill**: The pipeline automatically loads your most recent `targets_auto` CSV files and your last derived Color Coefficients.
-    - **Reference Star Selection**: Toggle between "Automatic" (picks the brightest valid star) or "Manual Coordinates" to strictly anchor your analysis to a specific star.
-    - Click **"Execute Differential Photometry"** to perform the full magnitude calculation workflow.
+### 5.1 Ensemble Comparison Stars
+
+Rather than relying on a single comparison star (which may itself vary slightly, have a bad pixel, or land on an image artifact in some frames), Calibra supports up to **5 comparison stars** measured simultaneously. Each star's name can be resolved via SIMBAD, and its standard magnitude and $B-V$ color can be fetched automatically from the selected reference catalog.
+
+For each comparison star $i$ in each frame, the pipeline independently derives a zero point:
+
+$$ZP_i = V_{\text{std},i} - \left( m_{\text{inst},i} - k \cdot X + T_{V_{bv}} \cdot (B-V)_i \right)$$
+
+where $m_{\text{inst},i}$ is the instrumental magnitude, $k$ is the extinction coefficient, $X$ is the airmass, and $T_{V_{bv}}$ is the color term.
+
+The ensemble zero point is the mean of the individual values:
+
+$$\overline{ZP} = \frac{1}{N} \sum_{i=1}^{N} ZP_i$$
+
+### 5.2 Calibration of the Target
+
+The target star's calibrated magnitude in each frame is:
+
+$$V_\text{target} = m_{\text{inst,target}} - k \cdot X + T_{V_{bv}} \cdot (B-V)_\text{target} + \overline{ZP}$$
+
+Note that $(B-V)_\text{target}$ is a user-supplied assumed value. Since it is held constant across all frames, any error in this assumption shifts the entire light curve by a fixed offset but does **not** affect the measured amplitude or period of variability.
+
+### 5.3 Uncertainty Propagation
+
+The total uncertainty on each data point combines two independent sources in quadrature:
+
+$$\sigma_V = \sqrt{\sigma_\text{phot}^2 + \sigma_{\overline{ZP}}^2}$$
+
+where:
+
+- $\sigma_\text{phot}$ is the target star's aperture photometry error (Poisson + background noise, see Section 2.3).
+- $\sigma_{\overline{ZP}} = \sigma_{ZP} / \sqrt{N}$ is the standard error of the mean zero point from the ensemble, using Bessel's correction ($N-1$ denominator) for the sample standard deviation.
+
+When only a single comparison star is used ($N=1$), a floor value of $\sigma_{\overline{ZP}} = 0.01$ mag is applied to prevent unrealistically small error bars that would hide the inherent uncertainty of using a single calibrator.
+
+### 5.4 Output
+
+The module produces three files in `photometry_output/`:
+
+| File | Contents |
+|---|---|
+| `light_curve_[StarName].csv` | HJD, magnitude, error, SNR, zero-point, number of ensemble stars per frame |
+| `aavso_[StarName].txt` | AAVSO Extended Format report (ready for submission) |
+| `plot_[StarName].png` | Light curve plot with error bars and inverted magnitude axis |
 
 ---
 
-## 6. Understanding the Output
+## 6. Running the Pipeline: The Configuration GUI (v2.0)
 
-### 6.1 Results CSV (`photometry_output/`)
+Launch the pipeline via `python main.py` to open the **Configuration GUI**. In v2.0 the interface is organized into six tabs:
+
+1.  **About**: Version information and a summary of Calibra's capabilities.
+2.  **⚙ Settings**: All shared configuration in one scrollable tab:
+    - **Files & Catalog**: Input FITS file pattern, reference catalog selection (ATLAS, APASS, GAIA, Landolt).
+    - **Region Filtering**: Restrict analysis to specific pixel or RA/DEC windows.
+    - **CCD Settings**: Gain, Read Noise, Dark Current, and Saturation Limit for formal error analysis.
+    - **Detection**: DAOStarFinder parameters (sigma, sharpness, roundness).
+    - **Aperture Photometry**: PSF box size, aperture radius, annulus inner/outer radii.
+    - **Zero Point Calibration**: Match tolerance, default ZP, min SNR, catalog search radius.
+    - **Atmospheric Extinction**: Shared $k_V$ and $k_B$ values used by all analysis modes.
+    - **Output Toggles**: Control diagnostic plots, detailed calibration logs, shift analysis.
+    - **Session Management**: Save/Load buttons. Settings are saved to `calibra_session.json` and auto-loaded on startup.
+3.  **Detect & Measure**: Runs the full star detection and zero-point calibration pipeline on the input FITS files. Produces CSV instrumental results and a calibration report for each filter.
+4.  **Color & Differential**: Two sub-sections:
+    - **Color Transformation**: Select B/V result CSVs, set airmass, and click "Run Color Transformation Analysis" to derive $T_{bv}$, $T_{b\_bv}$, $T_{v\_bv}$.
+    - **Differential Photometry**: Load coefficients (or auto-load from previous run), select a reference star (Automatic, by Name/SIMBAD, or Manual Coordinates), optionally select a specific target, and click "Execute Differential Photometry".
+5.  **Light Curves**: Time-series photometry for variable star analysis:
+    - **FITS Sequence Selection**: Glob pattern for a series of images and filter choice.
+    - **Ensemble Reference Stars**: Up to 5 comparison stars, each with a name, catalog magnitude, B-V color, a "Use" checkbox, and a "Fetch" button that resolves the star and retrieves its catalog data automatically.
+    - **Target Star**: The variable star to measure (by Name or Manual RA/Dec).
+    - **Coefficients & Metadata**: Color term, extinction, AAVSO observer code, site coordinates.
+    - **Progress & Cancel**: A progress bar tracks the sequence and a Cancel button allows safe interruption.
+    - Click **"Generate Light Curve"** to process. Outputs include a CSV, an AAVSO Extended Format report, and a light curve plot.
+6.  **Help**: Links to the README and this User Manual.
+
+
+---
+
+## 7. Understanding the Output
+
+### 7.1 Results CSV (`photometry_output/`)
 The primary output for every image. Key columns include:
 - `refined_x` / `refined_y`: The high-precision sub-pixel coordinates.
 - `ra_hms` / `dec_dms`: Celestial coordinates from the WCS header.
@@ -237,7 +295,7 @@ The primary output for every image. Key columns include:
 - `is_variable`: A "Yes/No" flag indicating if the star matched a record in the AAVSO VSX catalog.
 - `airmass`: The atmospheric airmass calculated from the FITS header.
 
-### 6.2 Diagnostic Plots (`photometry_plots/`)
+### 7.2 Diagnostic Plots (`photometry_plots/`)
 If enabled, the pipeline saves a four-panel graphic for each star showing:
 1.  **Raw Data**: The original pixel cutout.
 2.  **Gaussian Model**: The idealized mathematical fit.
@@ -246,7 +304,7 @@ If enabled, the pipeline saves a four-panel graphic for each star showing:
 
 ---
 
-## 7. Troubleshooting & Tips
+## 8. Troubleshooting & Tips
 - **No Stars Found?** Verify your `Detection Sigma`. Lower it (e.g., to 3.0) for faint targets or increase it (e.g., to 10.0) for crowded fields.
 - **Calibration Failures?** 
     - Check if the FITS header has valid `RA`/`DEC` keywords for online queries.
