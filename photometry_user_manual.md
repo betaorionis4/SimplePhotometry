@@ -1,6 +1,6 @@
 # Photometry with Calibra: Comprehensive User Manual
 
-Welcome to **Calibra** (:an automated photometric analysis & calibration toolkit), a professional-grade astronomical image analysis suite. 
+Welcome to **Calibra**: an automated photometric analysis & calibration toolkit. 
 This short manual provides some background on the software's architecture, mathematical principles, and operational workflow.
 
 The code can identify stars, perform PSF fitting to extract fluxes (using aperture photometry), and compares instrumental magnitudes with refernces magnitudes from catalogues available online (e.g. APASS DR9). Note that the provided fits file(s) need to have a WCS (i.e. they need to be plate solved).
