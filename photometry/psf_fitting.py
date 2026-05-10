@@ -10,12 +10,14 @@ from astropy.modeling import models, fitting
 from astropy.utils.exceptions import AstropyWarning
 
 def refine_coordinates_psf(image_data, results, box_size, aperture_radius, saturation_limit, max_plots_to_show, display_plots=False, plot_output_dir=None, base_filename="", print_psf_fitting=False):
-    print("=================================================================")
-    print("--- 2. PSF Modeling & Coordinate Refinement ---")
-    print("=================================================================\n")
+    if print_psf_fitting:
+        print("=================================================================")
+        print("--- 2. PSF Modeling & Coordinate Refinement ---")
+        print("=================================================================\n")
     fitter = fitting.LevMarLSQFitter()
     plots_shown = 0
 
+    all_fwhms = []
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', AstropyWarning)
         for rs in results:
@@ -52,12 +54,13 @@ def refine_coordinates_psf(image_data, results, box_size, aperture_radius, satur
                 if g_fit.x_stddev.value > box_size or g_fit.amplitude.value <= 0:
                     raise ValueError("Calculus Diverged")
             except Exception:
-                print(f"[{star_id}] FAILED PSF FIT (Too faint/noisy)")
+                # print(f"[{star_id}] FAILED PSF FIT")
                 continue
 
             fwhm_x = g_fit.x_stddev.value * 2.355
             fwhm_y = g_fit.y_stddev.value * 2.355
             avg_fwhm = abs((fwhm_x + fwhm_y) / 2.0)
+            all_fwhms.append(avg_fwhm)
 
             psf_integral_flux = 2 * np.pi * g_fit.amplitude.value * g_fit.x_stddev.value * g_fit.y_stddev.value
             pixel_flux_sum = np.sum(data_to_fit)
@@ -116,3 +119,11 @@ def refine_coordinates_psf(image_data, results, box_size, aperture_radius, satur
                     plt.show()
                 plt.close(fig)
                 plots_shown += 1
+
+    median_fwhm = np.median(all_fwhms) if all_fwhms else None
+    if print_psf_fitting:
+        if median_fwhm:
+            print(f"Image PSF Quality -> Median FWHM: {median_fwhm:.2f} px")
+        else:
+            print("PSF Fitting Failed for all stars in this image.")
+    return median_fwhm

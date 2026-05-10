@@ -1,6 +1,6 @@
 # Calibra: Automated Photometric Analysis & Calibration Toolkit
 
-**Version:** 2.0 — 2026-05-06
+**Version:** 3.0 — 2026-05-10
 **Description:** 
 An automated, highly robust Python toolkit for extracting scientific-grade photometry, calibrating zero points, obtaining color transformation coefficients for V and B filters, and estimating formal CCD/CMOS errors from astronomical monochrome FITS images. Calibra features **Ensemble Differential Photometry** with multiple comparison stars, **Time-Series Light Curve** generation with AAVSO-format reporting, and integrates **AAVSO VSX** cross-matching to automatically exclude known variable stars from calibration sets.
 
@@ -8,15 +8,13 @@ The code was created with lots of help from Google Antigravity (various agents),
 
 ---
 
-## What's New in v2.0
+## What's New in v3.0
 
-- **Reorganized GUI**: Streamlined from 10 tabs to 6 (About, Settings, Detect & Measure, Color & Differential, Light Curves, Help). All shared settings are consolidated in one place.
-- **Session Persistence**: All GUI settings are saved to `calibra_session.json` and automatically restored on startup.
-- **Progress Bar & Cancel**: The Light Curves workflow shows real-time progress and can be cancelled mid-run.
-- **Ensemble Photometry**: Light Curves now support up to 5 comparison stars. The engine averages zero points across the ensemble and propagates the calibration uncertainty into the final error bars.
-- **AAVSO Extended Format**: Full support for Check Star designation (`KNAME`/`KMAG`) and Comparison Star fields (`CNAME`/`CMAG`). The `TRANS` flag is set automatically based on color coefficient usage.
-- **Outlier Flagging**: Time-series results are automatically screened with 3σ clipping. Suspect points are flagged in the CSV and plotted distinctly in the light curve.
-- **Embedded Interactive Plots**: Color calibration, differential photometry accuracy, and light curves are now displayed live inside the GUI with zoom/pan toolbars.
+- **Centralized File Management**: A unified persistent `FITS File Manager` has replaced tab-specific file inputs, allowing users to load and preview files across all processing stages.
+- **Unified Analysis Workflow**: "Detect & Measure" and "Color & Differential" have been merged into a single `Analysis & Calibration` tab, promoting a logical top-to-bottom photometric workflow.
+- **Plate Solving Integration**: Direct integration with the ASTAP command-line engine for non-destructive batch plate-solving (WCS) from within the GUI.
+- **Enhanced UI & Aesthetics**: Implemented a modern deep-blue professional theme, consistent visual hierarchy, scrollable window interfaces for smaller screens, and real-time dual-preview panels for transformation and accuracy evaluations.
+- **Ensemble Photometry Scaling**: Enhanced workflow for time-series analysis and light curve reporting.
 
 ---
 
@@ -44,7 +42,7 @@ For a more detailed dive into the mathematical principles, theoretical backgroun
 *   **The Processing Pipeline**: From Star Detection to Shift Analysis and color calibration.
 *   **Differential Photometry**: Computing formal AAVSO-ready magnitudes ($B$, $V$, $B-V$) using reference stars.
 *   **Time-Series & Light Curves**: Ensemble comparison star photometry with formal uncertainty propagation.
-*   **GUI Guide**: The reorganized v2.0 tab layout and how to configure each workflow.
+*   **GUI Guide**: The new v3.0 FITS File Manager, unified Analysis tab layout, and Plate Solving.
 
 ---
 

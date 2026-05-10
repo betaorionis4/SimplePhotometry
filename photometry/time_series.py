@@ -105,18 +105,26 @@ def run_time_series_photometry(fits_files, target_ra, target_dec,
                                gain=1.0, k_coeff=0.15, filter_name='V',
                                observer_name="Calibra User",
                                site_lat=0.0, site_long=0.0,
-                               cancel_event=None, update_progress=None):
+                               cancel_event=None, update_progress=None,
+                               use_flexible_aperture=False, 
+                               aperture_fwhm_factor=2.0, annulus_inner_gap=2.0, annulus_width=5.0,
+                               print_psf_fitting=False):
     """
     Main loop for time-series photometry.
     """
     results = []
     
     from astropy.wcs import WCS
+    from photometry.psf_fitting import refine_coordinates_psf
+    from astropy.coordinates import SkyCoord
+    import astropy.units as u
     import warnings
     from astropy.utils.exceptions import AstropyWarning
     warnings.simplefilter('ignore', category=AstropyWarning)
 
     print(f"Starting time-series analysis on {len(fits_files)} files...")
+    if use_flexible_aperture:
+        print(f"  -> Flexible Aperture Enabled (Factor: {aperture_fwhm_factor}x FWHM)")
     
     for i, fpath in enumerate(fits_files):
         if cancel_event and cancel_event.is_set():
@@ -165,12 +173,52 @@ def run_time_series_photometry(fits_files, target_ra, target_dec,
                 hjd = get_hjd(None, target_ra, target_dec, header, lat, lon) or jd
                 airmass = header.get('AIRMASS', 1.0)
                 
-                # 2. Measure Target and Ensemble
-                target_res = measure_star(data, wcs, target_ra, target_dec, aperture_radius, annulus_inner, annulus_outer, gain)
+                # 2. Determine Radii: Fixed or Flexible
+                curr_ap = aperture_radius
+                curr_ann_in = annulus_inner
+                curr_ann_out = annulus_outer
+                median_fwhm = None
+
+                # To get FWHM, we run PSF fitting on the stars we care about
+                try:
+                    stars_to_fit = []
+                    # Target
+                    tx, ty = wcs.world_to_pixel(SkyCoord(ra=target_ra*u.deg, dec=target_dec*u.deg, frame='icrs'))
+                    stars_to_fit.append({'id': 'Target', 'x': tx + 1.0, 'y': ty + 1.0})
+                    # Ensemble
+                    for idx, s in enumerate(ensemble_stars):
+                        sx, sy = wcs.world_to_pixel(SkyCoord(ra=s['ra']*u.deg, dec=s['dec']*u.deg, frame='icrs'))
+                        stars_to_fit.append({'id': f"Ref_{idx}", 'x': sx + 1.0, 'y': sy + 1.0})
+                    
+                    # Run PSF fitting
+                    median_fwhm = refine_coordinates_psf(
+                        data, stars_to_fit, 15, aperture_radius, 
+                        60000, 0, display_plots=False, print_psf_fitting=print_psf_fitting
+                    )
+                except Exception as e:
+                    if print_psf_fitting: print(f"  [{os.path.basename(fpath)}] PSF Fitting failed: {e}")
+                    median_fwhm = None
+
+                if use_flexible_aperture and median_fwhm:
+                    curr_ap = median_fwhm * aperture_fwhm_factor
+                    curr_ann_in = curr_ap + annulus_inner_gap
+                    curr_ann_out = curr_ann_in + annulus_width
+                    if print_psf_fitting:
+                        print(f"  [{os.path.basename(fpath)}] Median FWHM: {median_fwhm:.2f}px -> Ap: {curr_ap:.2f}px")
+                    elif (i+1) % 10 == 0 or i == 0:
+                        print(f"  [{os.path.basename(fpath)}] Applied Flexible Ap: {curr_ap:.2f}px (FWHM: {median_fwhm:.2f}px)")
+                elif (i+1) % 10 == 0 or i == 0:
+                    if median_fwhm:
+                        print(f"  [{os.path.basename(fpath)}] Using Fixed Ap: {curr_ap:.2f}px (FWHM: {median_fwhm:.2f}px)")
+                    else:
+                        print(f"  [{os.path.basename(fpath)}] Using Fixed Ap: {curr_ap:.2f}px")
+
+                # 3. Measure Target and Ensemble
+                target_res = measure_star(data, wcs, target_ra, target_dec, curr_ap, curr_ann_in, curr_ann_out, gain)
                 
                 ensemble_res = []
                 for s in ensemble_stars:
-                    res = measure_star(data, wcs, s['ra'], s['dec'], aperture_radius, annulus_inner, annulus_outer, gain)
+                    res = measure_star(data, wcs, s['ra'], s['dec'], curr_ap, curr_ann_in, curr_ann_out, gain)
                     if res and not np.isnan(res['mag_inst']):
                         # Calculate individual Zero Point for this ref star
                         # ZV_i = mag_std_i - (mag_inst_corr_i + Tv_bv * bv_std_i)
@@ -188,7 +236,7 @@ def run_time_series_photometry(fits_files, target_ra, target_dec,
                         print(f"  - {os.path.basename(fpath)}: Target measurement returned NaN")
                         continue
                         
-                    # 3. Ensemble Calibration Logic
+                    # 4. Ensemble Calibration Logic
                     # We average the zero points from all valid ensemble stars
                     zvs = [r['zv'] for r in ensemble_res]
                     zv_avg = np.mean(zvs)
@@ -220,6 +268,7 @@ def run_time_series_photometry(fits_files, target_ra, target_dec,
                         'mag': v_target_std,
                         'mag_err': total_mag_err,
                         'snr': target_res['snr'],
+                        'fwhm': median_fwhm if median_fwhm else np.nan,
                         'zp_avg': zv_avg,
                         'zp_err': zv_err,
                         'n_ensemble': len(ensemble_res)
@@ -241,7 +290,7 @@ def run_time_series_photometry(fits_files, target_ra, target_dec,
         status = "Cancelled." if cancel_event and cancel_event.is_set() else "No data successfully processed."
         return None, status
         
-    # Phase 6: Outlier Flagging (3-sigma)
+    # Outlier Flagging (3-sigma)
     mags = [r['mag'] for r in results]
     if len(mags) > 5:
         median_mag = np.median(mags)

@@ -1,13 +1,14 @@
 # Photometry with Calibra: Comprehensive User Manual
 
-Welcome to **Calibra**: an automated photometric analysis & calibration toolkit. 
+Welcome to **Calibra**: an automated photometric analysis & calibration toolkit.
+
 This short manual provides some background on the software's architecture, mathematical principles, and operational workflow.
 
 The code can identify stars, perform PSF fitting to extract fluxes (using aperture photometry), and compares instrumental magnitudes with refernces magnitudes from catalogues available online (e.g. APASS DR9). Note that the provided fits file(s) need to have a WCS (i.e. they need to be plate solved).
 
 Make sure that the code uses the right filter. I use Johnson V and B filters, that are labled 'V_mag' and 'B_mag' by my imaging software - I use N.I.N.A. - in the FITS header.
 
-Since v1.5, Calibra supports automated color transformation calibration using paired B/V images. In v2.0, ensemble time-series photometry with multiple comparison stars and AAVSO-format light curve reporting were added.
+Since v1.5, Calibra supports automated color transformation calibration using paired B/V images. In v2.0, ensemble time-series photometry with multiple comparison stars and AAVSO-format light curve reporting were added. Version 3.0 introduces a centralized FITS File Manager, integrated Plate Solving via ASTAP, and a unified, logically flowing Analysis & Calibration tab.
 
 Useful background information on the latter and lots of other useful information is provided by the AAVSO Guide to CCD/CMOS Photometry (available for free via aavso.org).
 
@@ -252,13 +253,20 @@ The module produces three files in `photometry_output/`:
 
 ---
 
-## 6. Running the Pipeline: The Configuration GUI (v2.0)
+## 6. Running the Pipeline: The Configuration GUI (v3.0)
 
-Launch the pipeline via `python main.py` to open the **Configuration GUI**. In v2.0 the interface is organized into six tabs:
+Launch the pipeline via `python calibra.py` to open the **Configuration GUI**. In v3.0, the interface is split into a persistent top panel and a set of six processing tabs:
 
+### 6.1 FITS File Manager (Top Panel)
+Always visible at the top of the window, this centralized manager allows you to load, preview, and select your FITS files.
+- **Add Files/Directory**: Load your images.
+- **Preview**: View FITS headers directly in the GUI.
+- **Selection**: Check the boxes next to files to select them for Plate Solving, Calibration, or Analysis.
+
+### 6.2 Processing Tabs
 1.  **About**: Version information and a summary of Calibra's capabilities.
 2.  **⚙ Settings**: All shared configuration in one scrollable tab:
-    - **Files & Catalog**: Input FITS file pattern, reference catalog selection (ATLAS, APASS, GAIA, Landolt).
+    - **Reference Catalog**: Select from ATLAS, APASS, GAIA, Landolt.
     - **Region Filtering**: Restrict analysis to specific pixel or RA/DEC windows.
     - **CCD Settings**: Gain, Read Noise, Dark Current, and Saturation Limit for formal error analysis.
     - **Detection**: DAOStarFinder parameters (sigma, sharpness, roundness).
@@ -266,18 +274,18 @@ Launch the pipeline via `python main.py` to open the **Configuration GUI**. In v
     - **Zero Point Calibration**: Match tolerance, default ZP, min SNR, catalog search radius.
     - **Atmospheric Extinction**: Shared $k_V$ and $k_B$ values used by all analysis modes.
     - **Output Toggles**: Control diagnostic plots, detailed calibration logs, shift analysis.
-    - **Session Management**: Save/Load buttons. Settings are saved to `calibra_session.json` and auto-loaded on startup.
-3.  **Detect & Measure**: Runs the full star detection and zero-point calibration pipeline on the input FITS files. Produces CSV instrumental results and a calibration report for each filter.
-4.  **Color & Differential**: Two sub-sections:
-    - **Color Transformation**: Select B/V result CSVs, set airmass, and click "Run Color Transformation Analysis" to derive $T_{bv}$, $T_{b\_bv}$, $T_{v\_bv}$.
-    - **Differential Photometry**: Load coefficients (or auto-load from previous run), select a reference star (Automatic, by Name/SIMBAD, or Manual Coordinates), optionally select a specific target, and click "Execute Differential Photometry".
-5.  **Light Curves**: Time-series photometry for variable star analysis:
-    - **FITS Sequence Selection**: Glob pattern for a series of images and filter choice.
-    - **Ensemble Reference Stars**: Up to 5 comparison stars, each with a name, catalog magnitude, B-V color, a "Use" checkbox, and a "Fetch" button that resolves the star and retrieves its catalog data automatically.
-    - **Target Star**: The variable star to measure (by Name or Manual RA/Dec).
-    - **Coefficients & Metadata**: Color term, extinction, AAVSO observer code, site coordinates.
-    - **Progress & Cancel**: A progress bar tracks the sequence and a Cancel button allows safe interruption.
-    - Click **"Generate Light Curve"** to process. Outputs include a CSV, an AAVSO Extended Format report, and a light curve plot.
+3.  **Plate Solving**: Directly integrates with the ASTAP command-line engine to add WCS coordinates to raw FITS files.
+    - Requires ASTAP executable path and an active internet connection (or downloaded database).
+    - Files are processed non-destructively (saved with a `_wcs` suffix).
+4.  **🔍 Analysis & Calibration**: A unified top-to-bottom workflow for all primary photometry tasks:
+    - **Pipeline Configuration**: Runs the full star detection and zero-point calibration pipeline on the FITS files selected in the File Manager.
+    - **Color Transformation**: Automatically populates from pipeline results. Computes transformation coefficients from paired B/V images with live preview plots.
+    - **Differential Photometry**: Applies transformation coefficients to compute standard magnitudes relative to a reference star. Features an Accuracy Evaluation preview plot.
+5.  **Time Series**: Time-series photometry for variable star analysis:
+    - **FITS Sequence Selection**: Glob pattern for a sequence of images.
+    - **Ensemble Reference Stars**: Up to 5 comparison stars, resolved via SIMBAD with automatic catalog data retrieval.
+    - **Target Star**: The variable star to measure.
+    - **Generate Light Curve**: Outputs an AAVSO Extended Format report, a detailed CSV, and a light curve plot.
 6.  **Help**: Links to the README and this User Manual.
 
 

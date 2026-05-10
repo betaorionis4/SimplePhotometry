@@ -4,11 +4,13 @@ import os
 import sys
 import threading
 import csv
+import shutil
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from astropy.coordinates import SkyCoord
 import astropy.units as u
-from photometry.plate_solve import plate_solvem
+from photometry.plate_solve import plate_solve_files, solve_with_astap
+from photometry.image_calibration import calibrate_image
 
 class StdoutRedirector:
     def __init__(self, text_widget):
@@ -65,10 +67,23 @@ def run_config_gui(pipeline_callback=None):
     pipeline_callback: A function that takes (config) and runs the analysis.
     """
     root = tk.Tk()
-    root.title("Calibra: Automated Photometric Analysis & Calibration Toolkit")
-    root.geometry("950x650")
+    root.title("Calibra v3.0")
+    root.geometry("1100x750")
+    root.minsize(950, 650)
     root.resizable(True, True)
     root.configure(bg="#f0f2f5") 
+
+    # Set Window Icon
+    logo_path = os.path.join(os.path.dirname(__file__), "calibra_logo.png")
+    if os.path.exists(logo_path):
+        try:
+            from PIL import Image, ImageTk
+            icon_img = Image.open(logo_path)
+            icon_img = icon_img.resize((32, 32), Image.Resampling.LANCZOS)
+            icon_photo = ImageTk.PhotoImage(icon_img)
+            root.iconphoto(True, icon_photo)
+        except Exception as e:
+            print(f"Error loading icon: {e}")
 
     # --- MODERN STYLING ---
     style = ttk.Style()
@@ -80,8 +95,13 @@ def run_config_gui(pipeline_callback=None):
     text_dark = "#333333"
     
     style.configure("TNotebook", background="#f0f2f5", padding=5)
-    style.configure("TNotebook.Tab", background="#e1e4e8", padding=[12, 4], font=("Arial", 10))
-    style.map("TNotebook.Tab", background=[("selected", "white")], font=[("selected", ("Arial", 10, "bold"))])
+    # Unselected tabs: small padding, greyish
+    style.configure("TNotebook.Tab", background="#ccd0d5", padding=[10, 2], font=("Segoe UI", 9))
+    # Selected tab: larger padding, white, bold
+    style.map("TNotebook.Tab", 
+              background=[("selected", "white")], 
+              padding=[("selected", [20, 8])],
+              font=[("selected", ("Segoe UI", 10, "bold"))])
     
     style.configure("TLabelframe", background="white", borderwidth=1, relief="solid")
     style.configure("TLabelframe.Label", background="white", font=("Arial", 10, "bold"), foreground=primary_blue)
@@ -94,8 +114,57 @@ def run_config_gui(pipeline_callback=None):
     # Output dictionary
     config = None
 
-    # Variable storage
-    vars_dict = {}
+    # Shared File State
+    loaded_files = [] # List of dictionaries containing file path and metadata
+    vars_dict = {}    # Global-like storage for variable access
+    ts_widgets = {}   # Shared widgets for dynamic updates (e.g., filter dropdown)
+    
+    # --- MAIN LAYOUT STRUCTURE ---
+    # 1. Bottom Bar (Locked to bottom)
+    btn_frame = tk.Frame(root, bg="#f0f2f5")
+    btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 10))
+    
+    # 2. Main resizable vertical split (Takes all remaining space)
+    main_v_paned = tk.PanedWindow(root, orient=tk.VERTICAL, bg="#f0f2f5", sashwidth=4, borderwidth=0)
+    main_v_paned.pack(side=tk.TOP, fill="both", expand=True)
+    
+    def scan_fits_header(filepath):
+        from astropy.io import fits
+        metadata = {
+            'path': filepath,
+            'filename': os.path.basename(filepath),
+            'filter': '',
+            'binning': '',
+            'airmass': '',
+            'date_obs': '',
+            'exposure': '',
+            'wcs': False,
+            'object': '',
+            'size': f"{os.path.getsize(filepath) / 1024:.1f} KB"
+        }
+        try:
+            with fits.open(filepath) as hdul:
+                header = hdul[0].header
+                metadata['filter'] = str(header.get('FILTER', ''))
+                xbin = header.get('XBINNING', '')
+                ybin = header.get('YBINNING', '')
+                if xbin and ybin:
+                    metadata['binning'] = f"{xbin}x{ybin}"
+                # Rounded airmass
+                am = header.get('AIRMASS')
+                if am is not None:
+                    try:
+                        metadata['airmass'] = f"{float(am):.3f}"
+                    except:
+                        metadata['airmass'] = str(am)
+                
+                metadata['date_obs'] = str(header.get('DATE-OBS', ''))
+                metadata['exposure'] = str(header.get('EXPTIME', ''))
+                metadata['wcs'] = '✓' if 'CRVAL1' in header else '✗'
+                metadata['object'] = str(header.get('OBJECT', ''))
+        except Exception as e:
+            print(f"Error reading header for {filepath}: {e}")
+        return metadata
 
     def add_entry(parent, label_text, var_name, default_val, row, col_offset=0, vtype=float, width=15):
         ttk.Label(parent, text=label_text).grid(row=row, column=col_offset*2, sticky=tk.W, padx=10, pady=5)
@@ -139,316 +208,109 @@ def run_config_gui(pipeline_callback=None):
         ttk.Button(parent, text="Browse...", command=browse).grid(row=row, column=2, padx=5)
         return var
 
-    def save_session():
-        import json
-        data = {}
-        for key, (var, vtype) in vars_dict.items():
-            try:
-                data[key] = var.get()
-            except:
-                pass # Skip if variable is destroyed or invalid
-        
+    def on_run():
+        vars_vals = {}
         try:
-            with open("calibra_session.json", "w") as f:
-                json.dump(data, f, indent=4)
-            print("Session saved to calibra_session.json")
-        except Exception as e:
-            messagebox.showerror("Save Error", f"Could not save session: {e}")
-
-    def load_session():
-        import json
-        if not os.path.exists("calibra_session.json"):
-            return
-        
-        try:
-            with open("calibra_session.json", "r") as f:
-                data = json.load(f)
+            for k, (var, vtype) in vars_dict.items():
+                vars_vals[k] = vtype(var.get())
             
-            for key, value in data.items():
-                if key in vars_dict:
-                    var, vtype = vars_dict[key]
+            selected_iids = [iid for iid in tree.get_children() if tree.item(iid, 'values')[0] == '[X]']
+            if not selected_iids:
+                messagebox.showwarning("No Selection", "Please check at least one FITS file in the File Manager.")
+                return
+            
+            file_list = [loaded_files[int(iid)]['path'] for iid in selected_iids]
+
+            # Reconstruct dictionary bounds
+            config_run = {
+                'input_pattern': file_list,
+                'reference_catalog': vars_vals.pop('reference_catalog'),
+                'detect_sigma': vars_vals.pop('detect_sigma'),
+                'saturation_limit': vars_vals.pop('saturation_limit'),
+                'box_size': vars_vals.pop('box_size'),
+                'aperture_radius': vars_vals.pop('aperture_radius'),
+                'annulus_inner': vars_vals.pop('annulus_inner'),
+                'annulus_outer': vars_vals.pop('annulus_outer'),
+                'match_tolerance_arcsec': vars_vals.pop('match_tolerance_arcsec'),
+                'default_zero_point': vars_vals.pop('default_zero_point'),
+                'calib_snr_threshold': vars_vals.pop('calib_snr_threshold'),
+                'catalog_search_radius': vars_vals.pop('catalog_search_radius'),
+                'run_new_calibration': vars_vals.pop('run_new_calibration'),
+                'run_shift_analysis': vars_vals.pop('run_shift_analysis'),
+                'ccd_gain': vars_vals.pop('ccd_gain'),
+                'ccd_read_noise': vars_vals.pop('ccd_read_noise'),
+                'ccd_dark_current': vars_vals.pop('ccd_dark_current'),
+                'print_detailed_calibration': vars_vals.pop('print_detailed_calibration'),
+                'print_star_detection_table': vars_vals.pop('print_star_detection_table'),
+                'print_psf_fitting': vars_vals.pop('print_psf_fitting'),
+                'display_plots': vars_vals.pop('display_plots'),
+                'max_plots_to_show_per_file': vars_vals.pop('max_plots_to_show_per_file'),
+                'run_star_detection': vars_vals.pop('run_star_detection'),
+                'dao_roundhi': vars_vals.pop('dao_roundhi'),
+                'filter_mode': vars_vals.pop('filter_mode'),
+                'use_flexible_aperture': vars_vals.pop('use_flexible_aperture'),
+                'aperture_fwhm_factor': vars_vals.pop('aperture_fwhm_factor'),
+                'annulus_inner_gap': vars_vals.pop('annulus_inner_gap'),
+                'annulus_width': vars_vals.pop('annulus_width'),
+                'dao_sharplo': vars_vals.pop('dao_sharplo'),
+                'dao_sharphi': vars_vals.pop('dao_sharphi'),
+                'dao_roundlo': vars_vals.pop('dao_roundlo'),
+            }
+            
+            config_run['xy_bounds'] = {
+                'x_min': vars_vals.pop('xy_x_min'),
+                'x_max': vars_vals.pop('xy_x_max'),
+                'y_min': vars_vals.pop('xy_y_min'),
+                'y_max': vars_vals.pop('xy_y_max')
+            }
+            config_run['radec_bounds'] = {
+                'ra_min': vars_vals.pop('ra_min'),
+                'ra_max': vars_vals.pop('ra_max'),
+                'dec_min': vars_vals.pop('dec_min'),
+                'dec_max': vars_vals.pop('dec_max')
+            }
+            config_run['calibration_settings'] = {
+                'enable': False,
+                'bias_path': vars_vals.pop('bias_path'),
+                'flat_v_path': vars_vals.pop('flat_v_path'),
+                'flat_b_path': vars_vals.pop('flat_b_path')
+            }
+            
+            if pipeline_callback:
+                # Run in a separate thread to keep UI alive
+                run_btn.config(state=tk.DISABLED, text="Processing...")
+                
+                def thread_target():
                     try:
-                        var.set(value)
-                    except:
-                        # Silently skip errors (e.g. type mismatch if session file is old)
-                        pass
-            print("Session loaded from calibra_session.json")
-        except Exception as e:
-            print(f"Error loading session: {e}")
-
-    # Create Notebook for Tabs
-    notebook = ttk.Notebook(root)
-    notebook.pack(pady=10, expand=True, fill='both')
-
-    # --- TAB 0: About ---
-    tab_about = ttk.Frame(notebook)
-    notebook.add(tab_about, text="About")
-    
-    about_container = tk.Frame(tab_about, padx=30, pady=10, bg="white")
-    about_container.pack(fill="both", expand=True)
-    
-    # Try to load Logo
-    logo_path = os.path.join(os.path.dirname(__file__), "calibra_logo.png")
-
-    try:
-        from PIL import Image, ImageTk
-        img = Image.open(logo_path)
-        img = img.resize((250, 250), Image.Resampling.LANCZOS)
-        logo_img = ImageTk.PhotoImage(img)
-        lbl_logo = tk.Label(about_container, image=logo_img, bg="white")
-        lbl_logo.image = logo_img # Keep reference
-        lbl_logo.pack(pady=(0, 5))
-    except Exception as e:
-        # Fallback if PIL is missing or file not found
-        tk.Label(about_container, text="[ CALIBRA ]", font=("Arial", 24, "bold"), bg="white", fg=primary_blue).pack(pady=(0, 20))
-    
-    tk.Label(about_container, text="Calibra: An automated photometric analysis & calibration toolkit", font=("Arial", 16, "bold"), anchor="w", bg="white", fg=primary_blue).pack(fill="x")
-#    tk.Label(about_container, text="An automated photometric analysis & calibration toolkit", font=("Arial", 11, "italic"), anchor="w", bg="white", fg="#666").pack(fill="x", pady=(0, 20))
-    
-    info_frame = tk.Frame(about_container, bg="white")
-    info_frame.pack(fill="x", pady=10)
-    tk.Label(info_frame, text="Version: 2.0 \tLatest Update: 2026-05-06", font=("Arial", 10), anchor="w", bg="white").pack(fill="x")
-    #tk.Label(info_frame, text="Latest Update: 2026-04-30", font=("Arial", 10), anchor="w", bg="white").pack(fill="x")
-    
-    tk.Label(about_container, text="Description:", font=("Arial", 11, "bold"), anchor="w", bg="white", fg=primary_blue).pack(fill="x", pady=(10, 5))
-    desc_text = (
-#        "Calibra is a toolkit for the automated analysis of astronomical FITS images,\n"
-#        "and is designed for astronomers and enthusiasts to explore the principles of CCD/CMOS photometry.\n\n"
-        "Calibra uses star detection, sub-pixel PSF fitting, aperture photometry, \n"
-        "zero-point calibration, and offers determination of color transformations between filters. \n"
-        "For the analysis, Calibra can use the online catalogues ATLAS-RefCat2, APASS DR9, \n"
-        "Landolt Standards Catalogue and Gaia DR3, or a user-provided catalogue.\n"
-        "\n"
-        "Finally, Calibra can produce light curves for variable stars from a series of images and create AAVSO-formatted text files.\n"
-    )
-    tk.Label(about_container, text=desc_text, justify=tk.LEFT, font=("Arial", 10), anchor="w", bg="white").pack(fill="x")
-
-    # --- TAB 1: Settings ---
-    tab_settings_outer = ttk.Frame(notebook)
-    notebook.add(tab_settings_outer, text="⚙ Settings")
-    
-    settings_scroll = ScrollableFrame(tab_settings_outer)
-    settings_scroll.pack(fill="both", expand=True)
-    tab_settings = settings_scroll.scrollable_frame
-
-    # Files & Catalog (from old TAB 1)
-    lf_files = ttk.LabelFrame(tab_settings, text="Reference Catalog Selection")
-    lf_files.pack(fill="x", padx=10, pady=10)
-    
-    ttk.Label(lf_files, text="Ref Catalog:").grid(row=0, column=0, sticky=tk.W, padx=10, pady=5)
-    cat_var = tk.StringVar(value="ATLAS refcat2")
-    vars_dict["reference_catalog"] = (cat_var, str)
-    cat_cb = ttk.Combobox(lf_files, textvariable=cat_var, values=["ATLAS refcat2", "APASS DR9", "Landolt Standard Star Catalogue", "GAIA_DR3", os.path.join('photometry_refstars', 'reference_stars.csv')], width=62)
-    cat_cb.grid(row=0, column=1, sticky=tk.W, padx=10, pady=5)
-    
-    def browse_catalog():
-        from tkinter import filedialog
-        filename = filedialog.askopenfilename(initialdir="photometry_refstars", title="Select Reference Catalog", filetypes=(("CSV files", "*.csv"), ("all files", "*.*")))
-        if filename:
-            cat_var.set(filename)
-            
-    ttk.Button(lf_files, text="Browse...", command=browse_catalog).grid(row=0, column=2, padx=5)
-
-    # Region Filtering (from old TAB 1)
-    lf_filt = ttk.LabelFrame(tab_settings, text="Region Filtering")
-    lf_filt.pack(fill="x", padx=10, pady=10)
-    add_dropdown(lf_filt, "Filter Mode:", "filter_mode", ["all", "xy", "radec"], "all", 0)
-    
-    ttk.Label(lf_filt, text="XY Bounds (Pixels)").grid(row=1, column=0, columnspan=4, sticky=tk.W, padx=10, pady=(10,0))
-    add_entry(lf_filt, "X Min:", "xy_x_min", 200, 2, col_offset=0, vtype=int)
-    add_entry(lf_filt, "X Max:", "xy_x_max", 6000, 2, col_offset=1, vtype=int)
-    add_entry(lf_filt, "Y Min:", "xy_y_min", 200, 3, col_offset=0, vtype=int)
-    add_entry(lf_filt, "Y Max:", "xy_y_max", 4000, 3, col_offset=1, vtype=int)
-
-    ttk.Label(lf_filt, text="RADEC Bounds").grid(row=4, column=0, columnspan=4, sticky=tk.W, padx=10, pady=(10,0))
-    add_entry(lf_filt, "RA Min:", "ra_min", "10h34m00s", 5, col_offset=0, vtype=str)
-    add_entry(lf_filt, "RA Max:", "ra_max", "10h35m00s", 5, col_offset=1, vtype=str)
-    add_entry(lf_filt, "DEC Min:", "dec_min", "+43d00m00s", 6, col_offset=0, vtype=str)
-    add_entry(lf_filt, "DEC Max:", "dec_max", "+43d30m00s", 6, col_offset=1, vtype=str)
-
-    # --- TAB 2: Detect & Measure ---
-    tab_detect_outer = ttk.Frame(notebook)
-    notebook.add(tab_detect_outer, text="Detect & Measure")
-    
-    detect_scroll = ScrollableFrame(tab_detect_outer)
-    detect_scroll.pack(fill="both", expand=True)
-    tab_detect = detect_scroll.scrollable_frame
-
-    # Info frame for Detect & Measure
-    lf_detect_info = ttk.LabelFrame(tab_detect, text="Measurement Pipeline")
-    lf_detect_info.pack(fill="x", padx=10, pady=10)
-    ttk.Label(lf_detect_info, text="This tab runs the full detection and zero-point calibration pipeline on your input FITS files.\nIt will produce CSV instrumental results and a calibration report for each filter.", justify=tk.LEFT).pack(padx=10, pady=10)
-
-    # 1. FITS Input Pattern
-    lf_main_io = ttk.LabelFrame(tab_detect, text="FITS Input Selection")
-    lf_main_io.pack(fill="x", padx=10, pady=10)
-    
-    ttk.Label(lf_main_io, text="Input Pattern:").grid(row=0, column=0, sticky=tk.W, padx=10, pady=5)
-    input_var = tk.StringVar(value=r"C:\Astro\Photometry_Calibra\fitsfiles\*.fits")
-    vars_dict["input_pattern"] = (input_var, str)
-    ttk.Entry(lf_main_io, textvariable=input_var, width=65).grid(row=0, column=1, sticky=tk.W, padx=10, pady=5)
-    
-    def browse_input_dir():
-        from tkinter import filedialog
-        dirname = filedialog.askdirectory(initialdir=r"C:\Astro\Photometry_Calibra", title="Select FITS Directory")
-        if dirname:
-            input_var.set(os.path.join(dirname, "*.fits"))
-            
-    ttk.Button(lf_main_io, text="Browse...", command=browse_input_dir).grid(row=0, column=2, padx=5)
-
-    # 2. Pre-processing (Calibration)
-    lf_calib = ttk.LabelFrame(tab_detect, text="FITS Calibration (Pre-processing: Bias & Flats)")
-    lf_calib.pack(fill="x", padx=10, pady=10)
-    
-    add_check(lf_calib, "Enable Pre-processing (Apply Bias/Flats)", "enable_calibration", False, 0)
-    
-    # Plate solving reminder
-    ttk.Label(lf_calib, text="* Note: Input FITS files must still be plate solved (contain WCS headers).", 
-              foreground="#a00", font=("Arial", 8, "italic")).grid(row=0, column=1, sticky=tk.W, padx=(20, 10))
-    
-    add_file_selector(lf_calib, "Master Bias:", "bias_path", r"C:\Astro\Photometry_Calibra\bias_and_flats\Master_Bias_1x1_gain_0.fits", 1, initial_dir="bias_and_flats")
-    add_file_selector(lf_calib, "Master Flat (V):", "flat_v_path", r"C:\Astro\Photometry_Calibra\bias_and_flats\FLAT_Vmag_1x1_gain_0.fits", 2, initial_dir="bias_and_flats")
-    add_file_selector(lf_calib, "Master Flat (B):", "flat_b_path", r"C:\Astro\Photometry_Calibra\bias_and_flats\FLAT_Bmag_1x1_gain_0.fits", 3, initial_dir="bias_and_flats")
-
-    # --- TAB: Plate Solve ---
-    tab_plate_outer = ttk.Frame(notebook)
-    notebook.add(tab_plate_outer, text="🌌 Plate Solve")
-    
-    plate_scroll = ScrollableFrame(tab_plate_outer)
-    plate_scroll.pack(fill="both", expand=True)
-    tab_plate = plate_scroll.scrollable_frame
-
-    lf_plate_info = ttk.LabelFrame(tab_plate, text="Plate Solving with ASTAP")
-    lf_plate_info.pack(fill="x", padx=10, pady=10)
-    ttk.Label(lf_plate_info, text="Use this tab to plate-solve your raw FITS files using ASTAP.\nThis will create new files with a suffix (e.g., '_wcs') and preserve your originals.", justify=tk.LEFT).pack(padx=10, pady=10)
-
-    lf_plate_io = ttk.LabelFrame(tab_plate, text="Input & Settings")
-    lf_plate_io.pack(fill="x", padx=10, pady=10)
-    
-    ttk.Label(lf_plate_io, text="FITS File Pattern:").grid(row=0, column=0, sticky=tk.W, padx=10, pady=5)
-    plate_pattern_var = tk.StringVar(value=r"C:\Astro\Photometry_Calibra\fitsfiles\*.fits")
-    vars_dict["plate_pattern"] = (plate_pattern_var, str)
-    ttk.Entry(lf_plate_io, textvariable=plate_pattern_var, width=65).grid(row=0, column=1, sticky=tk.W, padx=10, pady=5)
-    
-    def browse_plate_dir():
-        from tkinter import filedialog
-        dirname = filedialog.askdirectory(initialdir=r"C:\Astro\Photometry_Calibra", title="Select FITS Directory")
-        if dirname:
-            plate_pattern_var.set(os.path.join(dirname, "*.fits"))
-            
-    ttk.Button(lf_plate_io, text="Browse...", command=browse_plate_dir).grid(row=0, column=2, padx=5)
-
-    add_entry(lf_plate_io, "Filename Suffix:", "plate_suffix", "wcs", 1, col_offset=0, vtype=str)
-    add_entry(lf_plate_io, "Search Radius (deg):", "plate_radius", 5.0, 1, col_offset=1)
-    
-    ttk.Label(lf_plate_io, text="ASTAP Executable:").grid(row=2, column=0, sticky=tk.W, padx=10, pady=5)
-    astap_path_var = tk.StringVar(value="astap")
-    vars_dict["astap_path"] = (astap_path_var, str)
-    ttk.Entry(lf_plate_io, textvariable=astap_path_var, width=65).grid(row=2, column=1, sticky=tk.W, padx=10, pady=5)
-    
-    def browse_astap():
-        from tkinter import filedialog
-        fname = filedialog.askopenfilename(title="Select ASTAP Executable")
-        if fname: astap_path_var.set(fname)
-    ttk.Button(lf_plate_io, text="Browse...", command=browse_astap).grid(row=2, column=2, padx=5)
-
-    add_check(lf_plate_io, "Annotate solved images (requires main astap.exe)", "plate_annotate", False, 3, col_offset=0)
-
-    plate_status_var = tk.StringVar(value="Ready.")
-    ttk.Label(tab_plate, textvariable=plate_status_var, font=("Arial", 9, "italic")).pack(pady=5)
-
-    def on_run_plate_solve():
-        pattern = plate_pattern_var.get()
-        suffix = vars_dict["plate_suffix"][0].get()
-        radius = vars_dict["plate_radius"][0].get()
-        exe = astap_path_var.get()
-        annotate = vars_dict["plate_annotate"][0].get()
-        
-        if not pattern:
-            messagebox.showerror("Error", "Please provide an input pattern.")
-            return
-            
-        plate_status_var.set("Plate solving in progress...")
-        run_plate_btn.config(state=tk.DISABLED, text="Solving...")
-        
-        def plate_thread():
-            try:
-                print(f"\n--- Starting Batch Plate Solve ---")
-                print(f"Pattern: {pattern}")
-                print(f"Suffix: {suffix}")
+                        results = pipeline_callback(config_run)
+                        # Auto-populate Color Calibration tab if B/V pairs found
+                        if results:
+                            for csv_path, filt in results:
+                                f_upper = filt.upper()
+                                if 'B' in f_upper:
+                                    vars_dict['color_b_csv'][0].set(csv_path)
+                                elif 'V' in f_upper:
+                                    vars_dict['color_v_csv'][0].set(csv_path)
+                    finally:
+                        run_btn.config(state=tk.NORMAL, text="Run Pipeline")
                 
-                solved = plate_solvem(pattern, suffix=suffix, astap_exe=exe, search_radius=radius, annotate=annotate)
+                thread = threading.Thread(target=thread_target)
+                thread.daemon = True
+                thread.start()
+            else:
+                print("No pipeline callback provided.")
                 
-                if solved:
-                    msg = f"Successfully solved {len(solved)} files."
-                    print(f"\n{msg}")
-                    root.after(0, lambda: messagebox.showinfo("Success", msg))
-                else:
-                    msg = "No files were solved. Check the console for details."
-                    print(f"\n{msg}")
-                    root.after(0, lambda: messagebox.showwarning("Warning", msg))
-                    
-                root.after(0, lambda: plate_status_var.set("Complete."))
-            except Exception as e:
-                print(f"Plate solve error: {e}")
-                root.after(0, lambda: messagebox.showerror("Error", f"Plate solve failed: {e}"))
-                root.after(0, lambda: plate_status_var.set("Error occurred."))
-            finally:
-                root.after(0, lambda: run_btn_plate_solve_relabel())
-
-        def run_btn_plate_solve_relabel():
-            run_plate_btn.config(state=tk.NORMAL, text="Run Plate Solver")
-
-        threading.Thread(target=plate_thread, daemon=True).start()
-
-    run_plate_btn = tk.Button(tab_plate, text="Run Plate Solver", command=on_run_plate_solve,
-                               bg="#0288d1", fg="white", font=("Arial", 11, "bold"), pady=10, width=30)
-    run_plate_btn.pack(pady=20)
-
-    # --- TAB 3: Color & Differential ---
-    tab_color_diff_outer = ttk.Frame(notebook)
-    notebook.add(tab_color_diff_outer, text="Color & Differential")
-    
-    color_diff_scroll = ScrollableFrame(tab_color_diff_outer)
-    color_diff_scroll.pack(fill="both", expand=True)
-    tab_color_diff = color_diff_scroll.scrollable_frame
-
-    # --- Color Calibration Section ---
-    lf_color = ttk.LabelFrame(tab_color_diff, text="1. Derive Transformation Coefficients (B-V Pairs)")
-    lf_color.pack(fill="x", padx=10, pady=10)
-    
-    import glob
-    def get_latest_csv(pattern):
-        files = glob.glob(os.path.join("photometry_output", pattern))
-        return max(files, key=os.path.getmtime) if files else ""
-        
-    recent_b_csv = get_latest_csv("*Bmag*.csv") or get_latest_csv("*_B_*.csv")
-    recent_v_csv = get_latest_csv("*Vmag*.csv") or get_latest_csv("*_V_*.csv")
-    
-    add_file_selector(lf_color, "B-Filter Results (CSV):", "color_b_csv", recent_b_csv, 0, initial_dir="photometry_output")
-    add_file_selector(lf_color, "V-Filter Results (CSV):", "color_v_csv", recent_v_csv, 1, initial_dir="photometry_output")
-    
-    ttk.Label(lf_color, text="Airmass B*:").grid(row=2, column=0, sticky=tk.W, padx=10, pady=5)
-    air_b_var = tk.DoubleVar(value=1.0)
-    vars_dict["air_b"] = (air_b_var, float)
-    ttk.Entry(lf_color, textvariable=air_b_var, width=10).grid(row=2, column=1, sticky=tk.W, padx=10, pady=5)
-    
-    ttk.Label(lf_color, text="Airmass V*:").grid(row=3, column=0, sticky=tk.W, padx=10, pady=5)
-    air_v_var = tk.DoubleVar(value=1.0)
-    vars_dict["air_v"] = (air_v_var, float)
-    ttk.Entry(lf_color, textvariable=air_v_var, width=10).grid(row=3, column=1, sticky=tk.W, padx=10, pady=5)
-
-    ttk.Label(lf_color, text="* Global extinction (k_B, k_V) settings from the Settings tab will be used.", foreground="#555", font=("Arial", 8, "italic")).grid(row=2, column=2, columnspan=2, sticky=tk.W, padx=10, pady=5)
-
-    override_airmass_var = tk.BooleanVar(value=False)
-    vars_dict["override_airmass"] = (override_airmass_var, bool)
-    ttk.Label(lf_color, text="* 1.0 used if FITS values not found. To override FITS airmass values, check the box below and enter new values.", foreground="#555", font=("Arial", 8, "italic")).grid(row=4, column=0, columnspan=2, sticky=tk.W, padx=10, pady=5)
-    ttk.Checkbutton(lf_color, text="Override FITS Airmass", variable=override_airmass_var).grid(row=5, column=0, columnspan=2, sticky=tk.W, padx=10, pady=5)
-
-    color_status_var = tk.StringVar(value="Select B and V result files to begin.")
-    tk.Label(lf_color, textvariable=color_status_var, fg="#333", font=("Arial", 9, "italic")).grid(row=6, column=0, columnspan=4, pady=5)
+        except ValueError as e:
+            messagebox.showerror("Input Error", "Please ensure all numerical fields contain valid numbers.")
 
     def on_run_color():
+        bc, vc = get_checked_b_v_counts()
+        if bc != 1 or vc != 1:
+            if not messagebox.askyesno("Input Warning", 
+                f"Color Transformation Analysis requires exactly one B and one V file.\n\n"
+                f"Currently checked in File Manager: {bc} B files, {vc} V files.\n\n"
+                f"Do you want to ignore this and proceed with the manually selected CSV files?"):
+                return
         try:
             b_csv = vars_dict["color_b_csv"][0].get()
             v_csv = vars_dict["color_v_csv"][0].get()
@@ -511,19 +373,801 @@ def run_config_gui(pipeline_callback=None):
                                      catalog, "photometry_output", 
                                      airmass_b=air_b_var.get(), airmass_v=air_v_var.get(),
                                      k_b=vars_dict["extinction_kb"][0].get(), k_v=vars_dict["extinction_kv"][0].get(),
-                                     axes=color_axes)
-            color_canvas.draw()
+                                     axes=color_coeff_axes)
+            color_coeff_canvas.draw()
             color_status_var.set(res)
             
         except Exception as e:
             color_status_var.set(f"Error: {e}")
             messagebox.showerror("Analysis Error", str(e))
 
-    tk.Button(lf_color, text="Run Color Transformation Analysis", command=on_run_color,
-              bg="#673ab7", fg="white", font=("Arial", 10, "bold"), pady=8).grid(row=7, column=0, columnspan=4, pady=10)
+    def on_run_diff():
+        bc, vc = get_checked_b_v_counts()
+        if bc != 1 or vc != 1:
+            if not messagebox.askyesno("Input Warning", 
+                f"Differential Photometry requires exactly one B and one V file.\n\n"
+                f"Currently checked in File Manager: {bc} B files, {vc} V files.\n\n"
+                f"Do you want to ignore this and proceed with the manually selected CSV files?"):
+                return
+        try:
+            b_csv = vars_dict["diff_b_csv"][0].get()
+            v_csv = vars_dict["diff_v_csv"][0].get()
+            cat_type = vars_dict["reference_catalog"][0].get()
+            
+            if not os.path.exists(b_csv) or not os.path.exists(v_csv):
+                messagebox.showerror("File Error", "Please select valid CSV result files for both filters.")
+                return
+                
+            from photometry.diff_photometry import run_differential_photometry
+            diff_status_var.set("Running differential photometry...")
+            root.update_idletasks()
+            
+            manual_coord = None
+            if ref_mode_var.get() == "manual":
+                ra_str = f"{ra_h_var.get()}h{ra_m_var.get()}m{ra_s_var.get()}s"
+                dec_str = f"{dec_d_var.get()}d{dec_m_var.get()}m{dec_s_var.get()}s"
+                from astropy.coordinates import SkyCoord
+                import astropy.units as u
+                try:
+                    c = SkyCoord(f"{ra_str} {dec_str}")
+                    manual_coord = (c.ra.deg, c.dec.deg)
+                except Exception as e:
+                    messagebox.showerror("Coordinate Error", f"Invalid manual coordinates format.\n{e}")
+                    diff_status_var.set("Error: Invalid manual coordinates.")
+                    return
+            elif ref_mode_var.get() == "name":
+                star_name = star_name_var.get().strip()
+                if not star_name:
+                    messagebox.showerror("Name Error", "Please enter a star name.")
+                    diff_status_var.set("Error: Empty star name.")
+                    return
+                from astropy.coordinates import SkyCoord
+                from astropy.coordinates.name_resolve import NameResolveError
+                diff_status_var.set(f"Resolving '{star_name}' via Simbad...")
+                root.update_idletasks()
+                try:
+                    c = SkyCoord.from_name(star_name)
+                    manual_coord = (c.ra.deg, c.dec.deg)
+                    print(f"Resolved '{star_name}' to RA: {c.ra.deg:.5f}, Dec: {c.dec.deg:.5f}")
+                except NameResolveError as e:
+                    messagebox.showerror("Resolution Error", f"Could not resolve name '{star_name}' via Simbad.\n\nNote: AAVSO AUIDs (like 000-BJS-555) are often not recognized. Try a common catalog name (e.g., TYC, HD, or variable star name) or use Manual Coordinates.")
+                    diff_status_var.set(f"Error: Could not resolve '{star_name}'.")
+                    return
+                except Exception as e:
+                    messagebox.showerror("Resolution Error", f"Error looking up '{star_name}':\n{e}")
+                    diff_status_var.set("Error during name resolution.")
+                    return
+            
+            manual_target_coord = None
+            target_mode = target_mode_var.get()
+            if target_mode == "manual":
+                ra_str = f"{target_ra_h_var.get()}h{target_ra_m_var.get()}m{target_ra_s_var.get()}s"
+                dec_str = f"{target_dec_d_var.get()}d{target_dec_m_var.get()}m{target_dec_s_var.get()}s"
+                try:
+                    c = SkyCoord(f"{ra_str} {dec_str}")
+                    manual_target_coord = (c.ra.deg, c.dec.deg)
+                except Exception as e:
+                    messagebox.showerror("Coordinate Error", f"Invalid manual target coordinates format.\n{e}")
+                    diff_status_var.set("Error: Invalid target coordinates.")
+                    return
+            elif target_mode == "name":
+                star_name = target_name_var.get().strip()
+                if not star_name:
+                    messagebox.showerror("Name Error", "Please enter a target star name.")
+                    diff_status_var.set("Error: Empty target star name.")
+                    return
+                from astropy.coordinates import SkyCoord
+                from astropy.coordinates.name_resolve import NameResolveError
+                diff_status_var.set(f"Resolving '{star_name}' via Simbad...")
+                root.update_idletasks()
+                try:
+                    c = SkyCoord.from_name(star_name)
+                    manual_target_coord = (c.ra.deg, c.dec.deg)
+                    print(f"Resolved target '{star_name}' to RA: {c.ra.deg:.5f}, Dec: {c.dec.deg:.5f}")
+                except NameResolveError as e:
+                    messagebox.showerror("Resolution Error", f"Could not resolve target name '{star_name}' via Simbad.\n\nNote: AAVSO AUIDs (like 000-BJS-555) are often not recognized. Try a common catalog name (e.g., TYC, HD, or variable star name) or use Manual Coordinates.")
+                    diff_status_var.set(f"Error: Could not resolve target '{star_name}'.")
+                    return
+                except Exception as e:
+                    messagebox.showerror("Resolution Error", f"Error looking up target '{star_name}':\n{e}")
+                    diff_status_var.set("Error during target name resolution.")
+                    return
+
+            res = run_differential_photometry(
+                csv_b=b_csv, csv_v=v_csv, ref_catalog=cat_type,
+                k_b=vars_dict["extinction_kb"][0].get(), k_v=vars_dict["extinction_kv"][0].get(),
+                Tbv=diff_tbv_var.get(), Tb_bv=diff_tbbv_var.get(), Tv_bv=diff_tvbv_var.get(),
+                radius_arcmin=float(vars_dict["catalog_search_radius"][0].get()),
+                manual_ref_coord=manual_coord,
+                target_mode=target_mode,
+                manual_target_coord=manual_target_coord,
+                axes=accuracy_axes
+            )
+            accuracy_canvas.draw()
+            diff_status_var.set(res)
+        except Exception as e:
+            diff_status_var.set(f"Error: {e}")
+            messagebox.showerror("Analysis Error", str(e))
+
+    def save_session():
+        import json
+        data = {}
+        for key, (var, vtype) in vars_dict.items():
+            try:
+                data[key] = var.get()
+            except:
+                pass # Skip if variable is destroyed or invalid
+        
+        # Add loaded file paths
+        data['loaded_file_paths'] = [f['path'] for f in loaded_files]
+        
+        try:
+            with open("calibra_session.json", "w") as f:
+                json.dump(data, f, indent=4)
+            print("Session saved to calibra_session.json")
+        except Exception as e:
+            messagebox.showerror("Save Error", f"Could not save session: {e}")
+
+    def load_session():
+        import json
+        if not os.path.exists("calibra_session.json"):
+            return
+        
+        try:
+            with open("calibra_session.json", "r") as f:
+                data = json.load(f)
+            
+            for key, value in data.items():
+                if key == 'loaded_file_paths':
+                    for path in value:
+                        if os.path.exists(path):
+                            loaded_files.append(scan_fits_header(path))
+                    continue
+                if key in vars_dict:
+                    var, vtype = vars_dict[key]
+                    try:
+                        var.set(value)
+                    except:
+                        # Silently skip errors (e.g. type mismatch if session file is old)
+                        pass
+            print("Session loaded from calibra_session.json")
+        except Exception as e:
+            print(f"Error loading session: {e}")
+
+    # --- FITS FILE MANAGER (Top Panel) ---
+    # Custom Header with a larger icon
+    # Use tk.Frame instead of ttk.Frame to avoid unwanted themed borders/stripes in labelwidget
+    file_mgr_header_frame = tk.Frame(root, bg="#f0f2f5") 
+    tk.Label(file_mgr_header_frame, text="📂", font=("Segoe UI Symbol", 16), bg="#f0f2f5", fg="#1a3a5f").pack(side=tk.LEFT)
+    tk.Label(file_mgr_header_frame, text=" FITS File Manager", font=("Arial", 10, "bold"), bg="#f0f2f5", fg="#1a3a5f").pack(side=tk.LEFT)
+    
+    file_manager_frame = ttk.LabelFrame(main_v_paned, labelwidget=file_mgr_header_frame)
+    main_v_paned.add(file_manager_frame, stretch="always", height=200)
+    
+    # Button Toolbar
+    toolbar_frame = ttk.Frame(file_manager_frame)
+    toolbar_frame.pack(fill="x", padx=5, pady=5)
+    
+    def update_file_table():
+        # Clear existing items
+        for item in tree.get_children():
+            tree.delete(item)
+        
+        # Populate with loaded_files
+        for idx, file_data in enumerate(loaded_files):
+            tag = 'even' if idx % 2 == 0 else 'odd'
+            # Default to checked '[X]'
+            tree.insert('', tk.END, iid=str(idx), values=(
+                '[X]',
+                file_data['filename'],
+                file_data['filter'],
+                file_data['binning'],
+                file_data['airmass'],
+                file_data['date_obs'],
+                file_data['exposure'],
+                file_data['wcs'],
+                file_data['object'],
+                file_data['size']
+            ), tags=(tag,))
+        
+        # Update status bar
+        if "filter_v_keyword" in vars_dict:
+            v_key = vars_dict["filter_v_keyword"][0].get().upper()
+        else:
+            v_key = "VMAG"
+            
+        if "filter_b_keyword" in vars_dict:
+            b_key = vars_dict["filter_b_keyword"][0].get().upper()
+        else:
+            b_key = "BMAG"
+
+        v_count = sum(1 for f in loaded_files if v_key and v_key in str(f['filter']).upper())
+        b_count = sum(1 for f in loaded_files if b_key and b_key in str(f['filter']).upper())
+        status_text = f"Loaded: {len(loaded_files)} files ({v_count}× V, {b_count}× B)"
+        file_manager_status.set(status_text)
+        
+        # Update light curve filter dropdown with unique translated filters
+        unique_translated = set()
+        v_key = vars_dict["filter_v_keyword"][0].get().upper() if "filter_v_keyword" in vars_dict else "VMAG"
+        b_key = vars_dict["filter_b_keyword"][0].get().upper() if "filter_b_keyword" in vars_dict else "BMAG"
+        
+        for f in loaded_files:
+            filt_str = str(f.get('filter', '')).upper()
+            if v_key and v_key in filt_str:
+                unique_translated.add("V")
+            elif b_key and b_key in filt_str:
+                unique_translated.add("B")
+            elif filt_str:
+                unique_translated.add(filt_str)
+        
+        unique_filters = sorted(list(unique_translated))
+        if 'filter_cb' in ts_widgets:
+            ts_widgets['filter_cb']['values'] = unique_filters
+            # If current selection is not in new list and list is not empty, select first
+            if unique_filters and vars_dict.get("ts_filter", [None])[0]:
+                curr = vars_dict["ts_filter"][0].get()
+                if curr not in unique_filters:
+                    vars_dict["ts_filter"][0].set(unique_filters[0])
+        
+        # Select first item if nothing selected
+        if tree.get_children() and not tree.selection():
+            first_iid = tree.get_children()[0]
+            tree.selection_set(first_iid)
+            tree.see(first_iid)
+            # Manually trigger header update
+            on_tree_select(None)
+
+    def on_load_files():
+        from tkinter import filedialog
+        files = filedialog.askopenfilenames(title="Select FITS Files", filetypes=(("FITS files", "*.fits *.fit"), ("all files", "*.*")))
+        if files:
+            for f in files:
+                # Avoid duplicates
+                if not any(existing['path'] == f for existing in loaded_files):
+                    loaded_files.append(scan_fits_header(f))
+            update_file_table()
+
+    def on_load_dir():
+        from tkinter import filedialog
+        import glob
+        dirname = filedialog.askdirectory(title="Select FITS Directory")
+        if dirname:
+            pattern = os.path.join(dirname, "*.fits")
+            files = glob.glob(pattern)
+            for f in files:
+                if not any(existing['path'] == f for existing in loaded_files):
+                    loaded_files.append(scan_fits_header(f))
+            update_file_table()
+
+    def on_remove_selected():
+        selected = [iid for iid in tree.get_children() if tree.item(iid, 'values')[0] == '[X]']
+        if not selected:
+            # Fallback to highlighted if none are checked
+            selected = tree.selection()
+            if not selected: return
+        
+        # We need to remove from the back to keep indices valid if we were removing from list directly,
+        # but here we can just rebuild the list from the remaining IIDs.
+        indices_to_remove = sorted([int(iid) for iid in selected], reverse=True)
+        for idx in indices_to_remove:
+            loaded_files.pop(idx)
+        update_file_table()
+
+    def on_clear_all():
+        if messagebox.askyesno("Confirm Clear", "Are you sure you want to remove all files from the list?"):
+            loaded_files.clear()
+            update_file_table()
+
+    def on_refresh_headers():
+        for i in range(len(loaded_files)):
+            loaded_files[i] = scan_fits_header(loaded_files[i]['path'])
+        update_file_table()
+
+    def on_check_all():
+        for iid in tree.get_children():
+            vals = list(tree.item(iid, 'values'))
+            vals[0] = '[X]'
+            tree.item(iid, values=vals)
+
+    def on_uncheck_all():
+        for iid in tree.get_children():
+            vals = list(tree.item(iid, 'values'))
+            vals[0] = '[ ]'
+            tree.item(iid, values=vals)
+
+    ttk.Button(toolbar_frame, text="Load Files...", command=on_load_files).pack(side=tk.LEFT, padx=5)
+    ttk.Button(toolbar_frame, text="Load Directory...", command=on_load_dir).pack(side=tk.LEFT, padx=5)
+    ttk.Button(toolbar_frame, text="Check All", command=on_check_all).pack(side=tk.LEFT, padx=5)
+    ttk.Button(toolbar_frame, text="Uncheck All", command=on_uncheck_all).pack(side=tk.LEFT, padx=5)
+    ttk.Button(toolbar_frame, text="Remove Checked/Selected", command=on_remove_selected).pack(side=tk.LEFT, padx=5)
+    ttk.Button(toolbar_frame, text="Clear All", command=on_clear_all).pack(side=tk.LEFT, padx=5)
+    ttk.Button(toolbar_frame, text="Refresh Headers", command=on_refresh_headers).pack(side=tk.LEFT, padx=5)
+
+    # Treeview Table & Header Panel (Side by Side)
+    tree_frame = ttk.Frame(file_manager_frame)
+    tree_frame.pack(fill="both", expand=True, padx=5, pady=5)
+    
+    paned = tk.PanedWindow(tree_frame, orient=tk.HORIZONTAL, bg="#f0f2f5", sashwidth=4)
+    paned.pack(fill="both", expand=True)
+    
+    # Left side: Tree
+    left_side = ttk.Frame(paned)
+    paned.add(left_side, stretch="always")
+    
+    columns = ("use", "filename", "filter", "binning", "airmass", "date_obs", "exposure", "wcs", "object", "size")
+    tree = ttk.Treeview(left_side, columns=columns, show='headings', height=6, selectmode='extended')
+    
+    # Configure Columns
+    column_configs = {
+        "use": ("Use", 40),
+        "filename": ("Filename", 150),
+        "filter": ("Filter", 60),
+        "binning": ("Binning", 70),
+        "airmass": ("Airmass", 70),
+        "date_obs": ("Date-Obs", 130),
+        "exposure": ("Exposure", 70),
+        "wcs": ("WCS?", 50),
+        "object": ("Object", 80),
+        "size": ("Size", 70)
+    }
+    
+    for col, (text, width) in column_configs.items():
+        tree.heading(col, text=text)
+        tree.column(col, width=width, anchor=tk.CENTER)
+    
+    ts_vsb = ttk.Scrollbar(left_side, orient="vertical", command=tree.yview)
+    tree.configure(yscrollcommand=ts_vsb.set)
+    tree.pack(side=tk.LEFT, fill="both", expand=True)
+    ts_vsb.pack(side=tk.RIGHT, fill="y")
+    
+    # Right side: Header Viewer
+    right_side = ttk.LabelFrame(paned, text="📄 FITS Header Preview")
+    paned.add(right_side, width=350)
+    
+    header_text = tk.Text(right_side, font=("Courier", 9), wrap=tk.NONE, bg="#fdfdfe")
+    h_hsb = ttk.Scrollbar(right_side, orient="horizontal", command=header_text.xview)
+    h_vsb = ttk.Scrollbar(right_side, orient="vertical", command=header_text.yview)
+    header_text.configure(xscrollcommand=h_hsb.set, yscrollcommand=h_vsb.set)
+    
+    h_vsb.pack(side=tk.RIGHT, fill="y")
+    h_hsb.pack(side=tk.BOTTOM, fill="x")
+    header_text.pack(fill="both", expand=True)
+    
+    def on_tree_select(event):
+        selected = tree.selection()
+        if not selected:
+            return
+        iid = selected[0]
+        try:
+            file_path = loaded_files[int(iid)]['path']
+            from astropy.io import fits
+            with fits.open(file_path) as hdul:
+                header = hdul[0].header
+                header_text.delete(1.0, tk.END)
+                # Formatted header display
+                header_text.insert(tk.END, f"File: {os.path.basename(file_path)}\n")
+                header_text.insert(tk.END, "="*40 + "\n")
+                for key, val in header.items():
+                    try:
+                        comment = header.comments[key]
+                        line = f"{key:<8}= {str(val):<20} / {comment}\n"
+                    except:
+                        line = f"{key:<8}= {str(val):<20}\n"
+                    header_text.insert(tk.END, line)
+        except Exception as e:
+            header_text.delete(1.0, tk.END)
+            header_text.insert(tk.END, f"Error reading header: {e}")
+
+    tree.bind("<<TreeviewSelect>>", on_tree_select)
+    
+    # Tags for alternating colors
+    tree.tag_configure('even', background='#ffffff')
+    tree.tag_configure('odd', background='#f7f9fc')
+    
+    def on_tree_click(event):
+        region = tree.identify_region(event.x, event.y)
+        if region == 'cell':
+            column = tree.identify_column(event.x)
+            if column == '#1': # The 'use' column
+                iid = tree.identify_row(event.y)
+                if iid:
+                    vals = list(tree.item(iid, 'values'))
+                    if vals[0] == '[X]':
+                        vals[0] = '[ ]'
+                    else:
+                        vals[0] = '[X]'
+                    tree.item(iid, values=vals)
+
+    tree.bind("<ButtonRelease-1>", on_tree_click)
+    
+    file_manager_status = tk.StringVar(value="No files loaded.")
+    ttk.Label(file_manager_frame, textvariable=file_manager_status, font=("Arial", 8, "italic")).pack(anchor=tk.W, padx=10, pady=2)
+
+    # Create Notebook for Tabs
+    notebook = ttk.Notebook(main_v_paned)
+    main_v_paned.add(notebook, stretch="always")
+
+    # Update the table after notebook is created (for initial load_session)
+    root.after(100, update_file_table)
+
+    # --- TAB 1: Pre-processing (NEW) ---
+    tab_pre_outer = ttk.Frame(notebook)
+    notebook.add(tab_pre_outer, text="⚙ Pre-processing")
+    
+    pre_scroll = ScrollableFrame(tab_pre_outer)
+    pre_scroll.pack(fill="both", expand=True)
+    tab_pre = pre_scroll.scrollable_frame
+
+    # --- TAB 2: Analysis & Calibration (Unified) ---
+    tab_analysis_scroll = ScrollableFrame(notebook)
+    tab_analysis = tab_analysis_scroll.scrollable_frame
+    notebook.add(tab_analysis_scroll, text="🔍 Analysis & Calibration")
+    
+
+    # --- TAB 3: Light Curves ---
+    tab_ts_outer = ttk.Frame(notebook)
+    notebook.add(tab_ts_outer, text="📈 Light Curves")
+    
+    ts_scroll = ScrollableFrame(tab_ts_outer)
+    ts_scroll.pack(fill="both", expand=True)
+    tab_ts = ts_scroll.scrollable_frame
+
+    # --- TAB 5: Settings ---
+    tab_settings_outer = ttk.Frame(notebook)
+    notebook.add(tab_settings_outer, text="🔧 Settings")
+    
+    settings_scroll = ScrollableFrame(tab_settings_outer)
+    settings_scroll.pack(fill="both", expand=True)
+    tab_settings = settings_scroll.scrollable_frame
+    
+    # --- TAB 5: Settings CONTENT ---
+    # Session Management - MOVED TO TOP
+    lf_session = ttk.LabelFrame(tab_settings, text="Session Management")
+    lf_session.pack(fill="x", padx=10, pady=10)
+    
+    ttk.Button(lf_session, text="Save Session", command=save_session).grid(row=0, column=0, padx=10, pady=5)
+    ttk.Button(lf_session, text="Load Session", command=load_session).grid(row=0, column=1, padx=10, pady=5)
+    ttk.Label(lf_session, text="* Settings are saved to calibra_session.json and auto-load on startup.", 
+              foreground="#555", font=("Arial", 8, "italic")).grid(row=0, column=2, padx=10)
+
+    # Files & Catalog (from old TAB 1) - MOVED UP
+    lf_files = ttk.LabelFrame(tab_settings, text="Reference Catalog Selection")
+    lf_files.pack(fill="x", padx=10, pady=10)
+    
+    ttk.Label(lf_files, text="Ref Catalog:").grid(row=0, column=0, sticky=tk.W, padx=10, pady=5)
+    cat_var = tk.StringVar(value="ATLAS refcat2")
+    vars_dict["reference_catalog"] = (cat_var, str)
+    cat_cb = ttk.Combobox(lf_files, textvariable=cat_var, values=["ATLAS refcat2", "APASS DR9", "Landolt Standard Star Catalogue", "GAIA_DR3", os.path.join('photometry_refstars', 'reference_stars.csv')], width=62)
+    cat_cb.grid(row=0, column=1, sticky=tk.W, padx=10, pady=5)
+    
+    def browse_catalog():
+        from tkinter import filedialog
+        filename = filedialog.askopenfilename(initialdir="photometry_refstars", title="Select Reference Catalog", filetypes=(("CSV files", "*.csv"), ("all files", "*.*")))
+        if filename:
+            cat_var.set(filename)
+            
+    ttk.Button(lf_files, text="Browse...", command=browse_catalog).grid(row=0, column=2, padx=5)
+
+    # Filter Keyword Mapping
+    lf_map = ttk.LabelFrame(tab_settings, text="Filter Keyword Mapping")
+    lf_map.pack(fill="x", padx=10, pady=10)
+    ttk.Label(lf_map, text="Define keywords in your FITS headers that identify the B and V filters.", 
+              foreground="#555", font=("Arial", 8, "italic")).grid(row=0, column=0, columnspan=4, padx=10, pady=(0, 10))
+    add_entry(lf_map, "B-Filter Keyword:", "filter_b_keyword", "Bmag", 1, col_offset=0, vtype=str)
+    add_entry(lf_map, "V-Filter Keyword:", "filter_v_keyword", "Vmag", 1, col_offset=1, vtype=str)
+
+    # Region Selection (from old TAB 1)
+    lf_filt = ttk.LabelFrame(tab_settings, text="Region Selection")
+    lf_filt.pack(fill="x", padx=10, pady=10)
+    add_dropdown(lf_filt, "Region:", "filter_mode", ["all", "xy", "radec"], "all", 0)
+    
+    ttk.Label(lf_filt, text="XY Bounds (Pixels)").grid(row=1, column=0, columnspan=4, sticky=tk.W, padx=10, pady=(10,0))
+    add_entry(lf_filt, "X Min:", "xy_x_min", 200, 2, col_offset=0, vtype=int)
+    add_entry(lf_filt, "X Max:", "xy_x_max", 4200, 2, col_offset=1, vtype=int)
+    add_entry(lf_filt, "Y Min:", "xy_y_min", 200, 3, col_offset=0, vtype=int)
+    add_entry(lf_filt, "Y Max:", "xy_y_max", 2800, 3, col_offset=1, vtype=int)
+    
+    ttk.Label(lf_filt, text="RA/Dec Bounds (Degrees)").grid(row=4, column=0, columnspan=4, sticky=tk.W, padx=10, pady=(10,0))
+    add_entry(lf_filt, "RA Min:", "ra_min", 0.0, 5, col_offset=0)
+    add_entry(lf_filt, "RA Max:", "ra_max", 360.0, 5, col_offset=1)
+    add_entry(lf_filt, "Dec Min:", "dec_min", -90.0, 6, col_offset=0)
+    add_entry(lf_filt, "Dec Max:", "dec_max", 90.0, 6, col_offset=1)
+
+
+
+    # --- TAB 1: Pre-processing CONTENT ---
+    
+    # 1. Calibration (Bias & Flats)
+    lf_calib = ttk.LabelFrame(tab_pre, text="FITS Calibration (Bias & Flats)")
+    lf_calib.pack(fill="x", padx=10, pady=10)
+    
+    add_file_selector(lf_calib, "Master Bias:", "bias_path", r"C:\Astro\Photometry_Calibra\bias_and_flats\Master_Bias_1x1_gain_0.fits", 0, initial_dir="bias_and_flats")
+    add_file_selector(lf_calib, "Master Flat (V):", "flat_v_path", r"C:\Astro\Photometry_Calibra\bias_and_flats\FLAT_Vmag_1x1_gain_0.fits", 1, initial_dir="bias_and_flats")
+    add_file_selector(lf_calib, "Master Flat (B):", "flat_b_path", r"C:\Astro\Photometry_Calibra\bias_and_flats\FLAT_Bmag_1x1_gain_0.fits", 2, initial_dir="bias_and_flats")
+
+    def on_run_calibration():
+        selected_iids = [iid for iid in tree.get_children() if tree.item(iid, 'values')[0] == '[X]']
+        if not selected_iids:
+            messagebox.showwarning("No Selection", "Please check at least one FITS file in the File Manager.")
+            return
+        
+        bias_path = vars_dict["bias_path"][0].get()
+        flat_v = vars_dict["flat_v_path"][0].get()
+        flat_b = vars_dict["flat_b_path"][0].get()
+        
+        if not os.path.exists(bias_path):
+            messagebox.showerror("Error", f"Master Bias not found at:\n{bias_path}")
+            return
+
+        def cal_thread():
+            try:
+                from astropy.io import fits
+                print(f"\n--- Starting Batch Calibration ---")
+                total = len(selected_iids)
+                success_count = 0
+                
+                for idx, iid in enumerate(selected_iids):
+                    iid_int = int(iid)
+                    orig_path = loaded_files[iid_int]['path']
+                    
+                    filt = loaded_files[iid_int]['filter'].upper()
+                    b_key = vars_dict["filter_b_keyword"][0].get().upper()
+                    v_key = vars_dict["filter_v_keyword"][0].get().upper()
+                    
+                    flat_path = None
+                    if b_key and b_key in filt:
+                        flat_path = flat_b
+                    elif v_key and v_key in filt:
+                        flat_path = flat_v
+                    
+                    if not flat_path:
+                        print(f"[{idx+1}/{total}] Error: Filter '{filt}' does not match B ({b_key}) or V ({v_key}) mapping. Skipping {os.path.basename(orig_path)}.")
+                        continue
+                    
+                    if not os.path.exists(flat_path):
+                        print(f"[{idx+1}/{total}] Warning: Master Flat for '{filt}' not found at {flat_path}. Skipping.")
+                        continue
+
+                    print(f"[{idx+1}/{total}] Calibrating {os.path.basename(orig_path)}...")
+                    with fits.open(orig_path) as hdul:
+                        data = hdul[0].data
+                        header = hdul[0].header
+                        if 'FILENAME' not in header:
+                            header['FILENAME'] = os.path.basename(orig_path)
+                        
+                        # Apply calibration
+                        calibrate_image(data, header, bias_path, flat_path, verbose=True)
+                        
+                        # Expected output path
+                        out_dir = "fitsfiles/calibrated"
+                        new_path = os.path.join(out_dir, f"cal_{os.path.basename(orig_path)}")
+                        
+                        if os.path.exists(new_path):
+                            success_count += 1
+                            loaded_files[iid_int] = scan_fits_header(new_path)
+                            root.after(0, update_file_table)
+                
+                msg = f"Calibration complete.\n{success_count} of {total} files were successfully calibrated."
+                print(f"\n{msg}")
+                root.after(0, lambda: messagebox.showinfo("Batch Complete", msg))
+            except Exception as e:
+                print(f"Calibration error: {e}")
+                root.after(0, lambda: messagebox.showerror("Error", f"Calibration failed: {e}"))
+
+        threading.Thread(target=cal_thread, daemon=True).start()
+
+    run_cal_btn = tk.Button(tab_pre, text="Run Calibration (Bias/Flat) on Selected", command=on_run_calibration,
+                            bg="#388e3c", fg="white", font=("Arial", 11, "bold"), pady=10, width=35)
+    run_cal_btn.pack(pady=(10, 20))
+
+    ttk.Separator(tab_pre, orient='horizontal').pack(fill='x', padx=20, pady=10)
+
+    # 2. Plate Solving (ASTAP)
+    lf_plate_info = ttk.LabelFrame(tab_pre, text="Plate Solving (ASTAP Integration)")
+    lf_plate_info.pack(fill="x", padx=10, pady=10)
+    
+    ttk.Label(lf_plate_info, text="Automatically solve FITS coordinates using ASTAP command-line solver.\nSolved files will be updated in the File Manager with a '_wcs' suffix.", justify=tk.LEFT).pack(padx=10, pady=10)
+
+    lf_plate_settings = ttk.LabelFrame(tab_pre, text="Solver Settings")
+    lf_plate_settings.pack(fill="x", padx=10, pady=10)
+    
+    add_entry(lf_plate_settings, "Output Suffix:", "plate_suffix", "wcs", 0, col_offset=0, vtype=str)
+    add_entry(lf_plate_settings, "Search Radius (deg):", "plate_radius", 5.0, 0, col_offset=1)
+
+    # ASTAP Path
+    ttk.Label(lf_plate_settings, text="ASTAP Executable:").grid(row=1, column=0, sticky=tk.W, padx=10, pady=5)
+    astap_path_var = tk.StringVar(value=r"C:\Program Files\astap\astap.exe")
+    vars_dict["astap_path"] = (astap_path_var, str)
+    ttk.Entry(lf_plate_settings, textvariable=astap_path_var, width=50).grid(row=1, column=1, sticky=tk.W, padx=10, pady=5)
+    
+    def browse_astap():
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(title="Select ASTAP Executable", filetypes=(("Executable", "*.exe"), ("all files", "*.*")))
+        if path: astap_path_var.set(path)
+    ttk.Button(lf_plate_settings, text="Browse...", command=browse_astap).grid(row=1, column=2, padx=5)
+
+    add_check(lf_plate_settings, "Annotate Image", "plate_annotate", False, 2)
+
+    plate_status_var = tk.StringVar(value="Ready")
+    ttk.Label(tab_pre, textvariable=plate_status_var, font=("Arial", 9, "italic")).pack(pady=5)
+
+    def on_run_plate_solve():
+        selected_iids = [iid for iid in tree.get_children() if tree.item(iid, 'values')[0] == '[X]']
+        if not selected_iids:
+            messagebox.showwarning("No Selection", "Please check at least one FITS file in the File Manager.")
+            return
+        
+        # 1. Pre-check for existing WCS
+        files_to_solve = []
+        already_solved = []
+        for iid in selected_iids:
+            file_data = loaded_files[int(iid)]
+            if file_data['wcs'] == '✓':
+                already_solved.append(iid)
+            else:
+                files_to_solve.append(iid)
+        
+        if already_solved:
+            msg = f"{len(already_solved)} files already have WCS (plate solved).\n\n" \
+                  "Do you want to re-solve them anyway?\n" \
+                  "[Yes] - Re-solve all selected files.\n" \
+                  "[No]  - Skip already solved files.\n" \
+                  "[Cancel] - Abort operation."
+            ans = messagebox.askyesnocancel("Existing WCS Found", msg)
+            if ans is None: # Cancel
+                return
+            if ans: # Yes
+                files_to_solve = list(selected_iids)
+            # else: No (Skip already solved), files_to_solve is already filtered
+        
+        if not files_to_solve:
+            messagebox.showinfo("Nothing to do", "No files to solve (all were skipped).")
+            return
+
+        suffix = vars_dict["plate_suffix"][0].get()
+        radius = vars_dict["plate_radius"][0].get()
+        exe = astap_path_var.get()
+        annotate = vars_dict["plate_annotate"][0].get()
+        
+        plate_status_var.set(f"Solving {len(files_to_solve)} files...")
+        run_plate_btn.config(state=tk.DISABLED, text="Solving...")
+        
+        def plate_thread():
+            try:
+                print(f"\n--- Starting Batch Plate Solve ---")
+                print(f"Target files: {len(files_to_solve)}")
+                print(f"Suffix: {suffix}")
+                
+                solved_count = 0
+                for idx, iid in enumerate(files_to_solve):
+                    iid_int = int(iid)
+                    orig_path = loaded_files[iid_int]['path']
+                    
+                    base, ext = os.path.splitext(orig_path)
+                    new_filename = f"{base}_{suffix}{ext}" if suffix else orig_path
+                    
+                    if new_filename != orig_path:
+                        print(f"[{idx+1}/{len(files_to_solve)}] Copying {orig_path} to {new_filename}...")
+                        shutil.copy2(orig_path, new_filename)
+                    
+                    print(f"[{idx+1}/{len(files_to_solve)}] Solving {new_filename}...")
+                    res = solve_with_astap(new_filename, astap_exe=exe, search_radius=radius, annotate=annotate)
+                    
+                    if res:
+                        solved_count += 1
+                        # Update the loaded_files entry in-place
+                        loaded_files[iid_int] = scan_fits_header(new_filename)
+                        root.after(0, update_file_table)
+                    else:
+                        print(f"[{idx+1}/{len(files_to_solve)}] Solve failed for {new_filename}")
+                
+                msg = f"Plate solve complete.\n{solved_count} of {len(files_to_solve)} files were successfully solved."
+                print(f"\n{msg}")
+                root.after(0, lambda: messagebox.showinfo("Batch Complete", msg))
+                root.after(0, lambda: plate_status_var.set("Complete."))
+            except Exception as e:
+                print(f"Plate solve error: {e}")
+                root.after(0, lambda: messagebox.showerror("Error", f"Plate solve failed: {e}"))
+                root.after(0, lambda: plate_status_var.set("Error occurred."))
+            finally:
+                root.after(0, lambda: run_btn_plate_solve_relabel())
+
+        def run_btn_plate_solve_relabel():
+            run_plate_btn.config(state=tk.NORMAL, text="Run Plate Solver on Selected")
+
+        threading.Thread(target=plate_thread, daemon=True).start()
+
+    run_plate_btn = tk.Button(tab_pre, text="Run Plate Solver on Selected", command=on_run_plate_solve,
+                               bg="#0288d1", fg="white", font=("Arial", 11, "bold"), pady=10, width=35)
+    run_plate_btn.pack(pady=20)
+
+
+
+    # --- TAB 2: Detect & Measure CONTENT ---
+
+    # 1. Pipeline Configuration
+    lf_pipe_cfg = ttk.LabelFrame(tab_analysis, text="Pipeline Configuration")
+    lf_pipe_cfg.pack(fill="x", padx=10, pady=10)
+    
+    add_check(lf_pipe_cfg, "Run Star Detection (DAOStarFinder)", "run_star_detection", True, 0, col_offset=0)
+    add_check(lf_pipe_cfg, "Perform Zero-Point Calibration", "run_new_calibration", True, 0, col_offset=1)
+    add_check(lf_pipe_cfg, "Run Positional Shift Analysis", "run_shift_analysis", False, 1, col_offset=0)
+    
+    ttk.Label(lf_pipe_cfg, text="* Tip: Disable 'ZP Calibration' if using pre-calibrated magnitudes.", foreground="#555", font=("Arial", 8, "italic")).grid(row=1, column=1, sticky=tk.W, padx=10)
+
+    # Analysis & Calibration Run Button
+    run_btn = tk.Button(tab_analysis, text="Run Analysis Pipeline on Selected", command=on_run, 
+                        bg="#1a3a5f", fg="white", font=("Arial", 10, "bold"), 
+                        width=40, relief="flat", pady=10)
+    run_btn.pack(pady=15)
+
+    # --- Color & Differential Section ---
+    ttk.Separator(tab_analysis, orient='horizontal').pack(fill='x', padx=20, pady=15)
+    
+    # 2. Color Transformation Section
+    lf_color = ttk.LabelFrame(tab_analysis, text="Color Transformation Analysis (B-V Pairs)")
+    lf_color.pack(fill="x", padx=10, pady=10)
+    
+    import glob
+    def get_latest_csv(pattern):
+        files = glob.glob(os.path.join("photometry_output", pattern))
+        return max(files, key=os.path.getmtime) if files else ""
+        
+    recent_b_csv = get_latest_csv("*Bmag*.csv") or get_latest_csv("*_B_*.csv")
+    recent_v_csv = get_latest_csv("*Vmag*.csv") or get_latest_csv("*_V_*.csv")
+    
+    add_file_selector(lf_color, "B-Filter Results (CSV):", "color_b_csv", recent_b_csv, 0, initial_dir="photometry_output")
+    add_file_selector(lf_color, "V-Filter Results (CSV):", "color_v_csv", recent_v_csv, 1, initial_dir="photometry_output")
+    
+    ttk.Label(lf_color, text="Airmass B*:").grid(row=2, column=0, sticky=tk.W, padx=10, pady=5)
+    air_b_var = tk.DoubleVar(value=1.0)
+    vars_dict["air_b"] = (air_b_var, float)
+    ttk.Entry(lf_color, textvariable=air_b_var, width=10).grid(row=2, column=1, sticky=tk.W, padx=10, pady=5)
+    
+    ttk.Label(lf_color, text="Airmass V*:").grid(row=3, column=0, sticky=tk.W, padx=10, pady=5)
+    air_v_var = tk.DoubleVar(value=1.0)
+    vars_dict["air_v"] = (air_v_var, float)
+    ttk.Entry(lf_color, textvariable=air_v_var, width=10).grid(row=3, column=1, sticky=tk.W, padx=10, pady=5)
+
+    ttk.Label(lf_color, text="* Global extinction (k_B, k_V) settings from the Settings tab will be used.", foreground="#555", font=("Arial", 8, "italic")).grid(row=2, column=2, columnspan=2, sticky=tk.W, padx=10, pady=5)
+
+    override_airmass_var = tk.BooleanVar(value=False)
+    vars_dict["override_airmass"] = (override_airmass_var, bool)
+    ttk.Label(lf_color, text="* 1.0 used if FITS values not found. To override FITS airmass values, check the box below and enter new values.", foreground="#555", font=("Arial", 8, "italic")).grid(row=4, column=0, columnspan=2, sticky=tk.W, padx=10, pady=5)
+    ttk.Checkbutton(lf_color, text="Override FITS Airmass", variable=override_airmass_var).grid(row=5, column=0, columnspan=2, sticky=tk.W, padx=10, pady=5)
+
+    tk.Button(tab_analysis, text="Run Color Transformation Analysis", command=on_run_color,
+              bg="#1a3a5f", fg="white", font=("Arial", 10, "bold"), width=35, relief="flat", pady=10).pack(pady=5)
+
+    color_status_var = tk.StringVar(value="Select B and V result files to begin.")
+    tk.Label(tab_analysis, textvariable=color_status_var, fg="#333", font=("Arial", 9, "italic")).pack(pady=5)
+
+    # Preview for Color Transformation
+    lf_color_preview = ttk.LabelFrame(tab_analysis, text="Color Transformation Preview")
+    lf_color_preview.pack(fill="x", padx=10, pady=5)
+    
+    color_coeff_fig, color_coeff_axes = plt.subplots(1, 3, figsize=(10, 3.5))
+    color_coeff_canvas = FigureCanvasTkAgg(color_coeff_fig, master=lf_color_preview)
+    color_coeff_canvas.get_tk_widget().pack(fill="x", expand=True)
+    color_coeff_toolbar = NavigationToolbar2Tk(color_coeff_canvas, lf_color_preview)
+    color_coeff_toolbar.update()
+
+    def get_checked_b_v_counts():
+        selected_iids = [iid for iid in tree.get_children() if tree.item(iid, 'values')[0] == '[X]']
+        b_count = 0
+        v_count = 0
+        b_key = vars_dict["filter_b_keyword"][0].get().upper() if "filter_b_keyword" in vars_dict else "BMAG"
+        v_key = vars_dict["filter_v_keyword"][0].get().upper() if "filter_v_keyword" in vars_dict else "VMAG"
+        
+        for iid in selected_iids:
+            finfo = loaded_files[int(iid)]
+            filt = str(finfo.get('filter', '')).upper()
+            if b_key in filt or (len(filt)==1 and filt=='B'): b_count += 1
+            elif v_key in filt or (len(filt)==1 and filt=='V'): v_count += 1
+        return b_count, v_count
 
     # --- Differential Photometry Section ---
-    lf_diff = ttk.LabelFrame(tab_color_diff, text="2. Compute B/V relative to a reference star")
+    lf_diff = ttk.LabelFrame(tab_analysis, text="2. Compute B/V relative to a reference star")
     lf_diff.pack(fill="x", padx=10, pady=10)
     
     add_file_selector(lf_diff, "B-Filter Results (CSV):", "diff_b_csv", recent_b_csv, 0, initial_dir="photometry_output")
@@ -548,7 +1192,7 @@ def run_config_gui(pipeline_callback=None):
     
     diff_status_var = tk.StringVar(value="Load coefficients and select CSV files to begin.")
     
-    lf_ref = ttk.LabelFrame(tab_color_diff, text="Reference Star Selection")
+    lf_ref = ttk.LabelFrame(tab_analysis, text="Reference Star Selection")
     lf_ref.pack(fill="x", padx=10, pady=10)
     
     ref_mode_var = tk.StringVar(value="auto")
@@ -640,7 +1284,7 @@ def run_config_gui(pipeline_callback=None):
     ref_mode_var.trace("w", toggle_ref_entries)
     toggle_ref_entries()
 
-    lf_target = ttk.LabelFrame(tab_color_diff, text="Target Star Selection")
+    lf_target = ttk.LabelFrame(tab_analysis, text="Target Star Selection")
     lf_target.pack(fill="x", padx=10, pady=10)
     
     target_mode_var = tk.StringVar(value="all")
@@ -742,40 +1386,35 @@ def run_config_gui(pipeline_callback=None):
         else:
             diff_status_var.set("No previous coefficients found. Enter manually.")
             
-    tk.Button(lf_diff, text="Load Last Coefficients", command=load_color_coefficients).grid(row=5, column=0, columnspan=2, pady=5)
+    tk.Button(lf_diff, text="Load Last Coefficients", command=load_color_coefficients, bg="#f0f2f5", relief="flat").grid(row=5, column=0, columnspan=2, pady=5)
             
-    diff_status_label = tk.Label(tab_color_diff, textvariable=diff_status_var, fg="#333", font=("Arial", 9, "italic"))
+    tk.Button(tab_analysis, text="Execute Differential Photometry", command=on_run_diff,
+              bg="#1a3a5f", fg="white", font=("Arial", 10, "bold"), width=35, relief="flat", pady=10).pack(pady=5)
+
+    diff_status_label = tk.Label(tab_analysis, textvariable=diff_status_var, fg="#333", font=("Arial", 9, "italic"))
     diff_status_label.pack(pady=5)
 
-    # Plot for Color/Diff
-    lf_color_plot = ttk.LabelFrame(tab_color_diff, text="Analysis Preview (Color Terms / Accuracy)")
-    lf_color_plot.pack(fill="both", expand=True, padx=10, pady=5)
+    # Preview for Accuracy
+    lf_accuracy_preview = ttk.LabelFrame(tab_analysis, text="Accuracy Evaluation Preview")
+    lf_accuracy_preview.pack(fill="x", padx=10, pady=5)
     
-    color_fig, color_axes = plt.subplots(1, 3, figsize=(12, 4))
-    color_canvas = FigureCanvasTkAgg(color_fig, master=lf_color_plot)
-    color_canvas.get_tk_widget().pack(fill="both", expand=True)
-    color_toolbar = NavigationToolbar2Tk(color_canvas, lf_color_plot)
-    color_toolbar.update()
+    accuracy_fig, accuracy_axes = plt.subplots(1, 3, figsize=(10, 3.5))
+    accuracy_canvas = FigureCanvasTkAgg(accuracy_fig, master=lf_accuracy_preview)
+    accuracy_canvas.get_tk_widget().pack(fill="x", expand=True)
+    accuracy_toolbar = NavigationToolbar2Tk(accuracy_canvas, lf_accuracy_preview)
+    accuracy_toolbar.update()
 
-    # --- TAB 4: Light Curves ---
-    tab_ts_outer = ttk.Frame(notebook)
-    notebook.add(tab_ts_outer, text="Light Curves")
+    ts_container = tab_ts
     
-    ts_scroll = ScrollableFrame(tab_ts_outer)
-    ts_scroll.pack(fill="both", expand=True)
-    ts_container = ts_scroll.scrollable_frame
-    
-    lf_ts_io = ttk.LabelFrame(ts_container, text="FITS Sequence Selection")
-    
-    ttk.Label(lf_ts_io, text="FITS File Pattern:").grid(row=0, column=0, sticky=tk.W, padx=10, pady=5)
-    ts_pattern_var = tk.StringVar(value="C:\\Astro\\Photometry_Calibra\\fitsfiles\\*.fits")
-    vars_dict["ts_pattern"] = (ts_pattern_var, str)
-    ttk.Entry(lf_ts_io, textvariable=ts_pattern_var, width=50).grid(row=0, column=1, columnspan=3, sticky=tk.W, padx=10, pady=5)
-    
-    ttk.Label(lf_ts_io, text="Filter:").grid(row=1, column=0, sticky=tk.W, padx=10, pady=5)
+    # Filter selection for Light Curves
+    filter_frame = ttk.Frame(ts_container)
+    filter_frame.pack(fill="x", padx=10, pady=5)
+    ttk.Label(filter_frame, text="Light Curve Filter:").pack(side=tk.LEFT, padx=5)
     ts_filter_var = tk.StringVar(value="V")
     vars_dict["ts_filter"] = (ts_filter_var, str)
-    ttk.Combobox(lf_ts_io, textvariable=ts_filter_var, values=["V", "B"], state="readonly", width=5).grid(row=1, column=1, sticky=tk.W, padx=10, pady=5)
+    ts_filter_cb = ttk.Combobox(filter_frame, textvariable=ts_filter_var, values=["V", "B"], state="readonly", width=5)
+    ts_filter_cb.pack(side=tk.LEFT, padx=5)
+    ts_widgets['filter_cb'] = ts_filter_cb
     def get_coords_ts(mode, name, ra_s, dec_s):
         from astropy.coordinates import SkyCoord
         import astropy.units as u
@@ -960,16 +1599,9 @@ def run_config_gui(pipeline_callback=None):
     # Target Star
     lf_ts_target = ttk.LabelFrame(ts_container, text="Target Star (Variable)")
     # Now pack in the requested order
-    # 1. IO Selection
-    lf_ts_io.pack(fill="x", padx=10, pady=10)
-
-    # 2. Target
+    # 1. Selection (Handled by File Manager)
     lf_ts_target.pack(fill="x", padx=10, pady=5)
-    
-    # 3. Ensemble
     lf_ts_ensemble.pack(fill="x", padx=10, pady=5)
-    
-    # 4. Coefficients
     lf_ts_coeff.pack(fill="x", padx=10, pady=5)
     
     ts_target_mode_var = tk.StringVar(value="name")
@@ -1104,11 +1736,32 @@ def run_config_gui(pipeline_callback=None):
     # Packed later during execution or hidden by default
     
     def on_run_ts():
-        import glob
-        pattern = ts_pattern_var.get()
-        files = glob.glob(pattern)
+        selected_iids = [iid for iid in tree.get_children() if tree.item(iid, 'values')[0] == '[X]']
+        if not selected_iids:
+            messagebox.showwarning("No Selection", "Please check at least one FITS file in the File Manager.")
+            return
+        
+        selected_filter = ts_filter_var.get().upper()
+        v_key = vars_dict["filter_v_keyword"][0].get().upper()
+        b_key = vars_dict["filter_b_keyword"][0].get().upper()
+        
+        files = []
+        for iid in selected_iids:
+            file_data = loaded_files[int(iid)]
+            filt_str = str(file_data['filter']).upper()
+            
+            # Determine translated filter of this file
+            trans_filt = filt_str
+            if v_key and v_key in filt_str:
+                trans_filt = "V"
+            elif b_key and b_key in filt_str:
+                trans_filt = "B"
+            
+            if selected_filter == trans_filt:
+                files.append(file_data['path'])
+        
         if not files:
-            messagebox.showerror("Error", f"No files found matching: {pattern}")
+            messagebox.showwarning("No Matching Files", f"None of the checked files match the selected filter: {selected_filter}")
             return
             
         # Collect Ensemble & Check Star
@@ -1201,7 +1854,12 @@ def run_config_gui(pipeline_callback=None):
                 site_lat=ts_lat_var.get(),
                 site_long=ts_lon_var.get(),
                 cancel_event=cancel_event,
-                update_progress=update_prog
+                update_progress=update_prog,
+                use_flexible_aperture=vars_dict["use_flexible_aperture"][0].get(),
+                aperture_fwhm_factor=vars_dict["aperture_fwhm_factor"][0].get(),
+                annulus_inner_gap=vars_dict["annulus_inner_gap"][0].get(),
+                annulus_width=vars_dict["annulus_width"][0].get(),
+                print_psf_fitting=vars_dict.get("print_psf_fitting", [None, None])[0].get() if "print_psf_fitting" in vars_dict else False
             )
             
             root.after(0, lambda: cancel_btn.pack_forget())
@@ -1230,7 +1888,8 @@ def run_config_gui(pipeline_callback=None):
                                   trans=is_trans)
                 
                 # Update embedded plot
-                plot_light_curve(results, ts_target_name_var.get(), out_plot, ax=ts_ax)
+                plot_title = f"{ts_target_name_var.get()} ({ts_filter_var.get()} Filter)"
+                plot_light_curve(results, plot_title, out_plot, ax=ts_ax)
                 root.after(0, ts_canvas.draw)
                 
                 # Update table
@@ -1246,6 +1905,7 @@ def run_config_gui(pipeline_callback=None):
                             f"{r['mag']:.4f}", 
                             f"{r['mag_err']:.4f}", 
                             f"{r['snr']:.1f}",
+                            f"{r.get('fwhm', 0.0):.2f}",
                             r.get('flag', 'OK')
                         ))
                 root.after(0, update_table)
@@ -1268,12 +1928,13 @@ def run_config_gui(pipeline_callback=None):
     lf_ts_table = ttk.LabelFrame(ts_container, text="Numerical Results")
     lf_ts_table.pack(fill="both", expand=True, padx=10, pady=5)
     
-    ts_tree = ttk.Treeview(lf_ts_table, columns=("JD", "HJD", "Mag", "Err", "SNR", "Flag"), show='headings', height=10)
+    ts_tree = ttk.Treeview(lf_ts_table, columns=("JD", "HJD", "Mag", "Err", "SNR", "FWHM", "Flag"), show='headings', height=10)
     ts_tree.heading("JD", text="JD")
     ts_tree.heading("HJD", text="HJD")
     ts_tree.heading("Mag", text="Mag")
     ts_tree.heading("Err", text="Err")
     ts_tree.heading("SNR", text="SNR")
+    ts_tree.heading("FWHM", text="FWHM")
     ts_tree.heading("Flag", text="Flag")
     
     ts_tree.column("JD", width=100, anchor=tk.CENTER)
@@ -1281,6 +1942,7 @@ def run_config_gui(pipeline_callback=None):
     ts_tree.column("Mag", width=70, anchor=tk.CENTER)
     ts_tree.column("Err", width=70, anchor=tk.CENTER)
     ts_tree.column("SNR", width=60, anchor=tk.CENTER)
+    ts_tree.column("FWHM", width=60, anchor=tk.CENTER)
     ts_tree.column("Flag", width=70, anchor=tk.CENTER)
     
     ts_vsb = ttk.Scrollbar(lf_ts_table, orient="vertical", command=ts_tree.yview)
@@ -1290,110 +1952,6 @@ def run_config_gui(pipeline_callback=None):
     ts_vsb.pack(side=tk.RIGHT, fill="y")
 
     # --- END TAB 6 ---
-
-    def on_run_diff():
-        try:
-            b_csv = vars_dict["diff_b_csv"][0].get()
-            v_csv = vars_dict["diff_v_csv"][0].get()
-            cat_type = vars_dict["reference_catalog"][0].get()
-            
-            if not os.path.exists(b_csv) or not os.path.exists(v_csv):
-                messagebox.showerror("File Error", "Please select valid CSV result files for both filters.")
-                return
-                
-            from photometry.diff_photometry import run_differential_photometry
-            diff_status_var.set("Running differential photometry...")
-            root.update_idletasks()
-            
-            manual_coord = None
-            if ref_mode_var.get() == "manual":
-                ra_str = f"{ra_h_var.get()}h{ra_m_var.get()}m{ra_s_var.get()}s"
-                dec_str = f"{dec_d_var.get()}d{dec_m_var.get()}m{dec_s_var.get()}s"
-                from astropy.coordinates import SkyCoord
-                import astropy.units as u
-                try:
-                    c = SkyCoord(f"{ra_str} {dec_str}")
-                    manual_coord = (c.ra.deg, c.dec.deg)
-                except Exception as e:
-                    messagebox.showerror("Coordinate Error", f"Invalid manual coordinates format.\n{e}")
-                    diff_status_var.set("Error: Invalid manual coordinates.")
-                    return
-            elif ref_mode_var.get() == "name":
-                star_name = star_name_var.get().strip()
-                if not star_name:
-                    messagebox.showerror("Name Error", "Please enter a star name.")
-                    diff_status_var.set("Error: Empty star name.")
-                    return
-                from astropy.coordinates import SkyCoord
-                from astropy.coordinates.name_resolve import NameResolveError
-                diff_status_var.set(f"Resolving '{star_name}' via Simbad...")
-                root.update_idletasks()
-                try:
-                    c = SkyCoord.from_name(star_name)
-                    manual_coord = (c.ra.deg, c.dec.deg)
-                    print(f"Resolved '{star_name}' to RA: {c.ra.deg:.5f}, Dec: {c.dec.deg:.5f}")
-                except NameResolveError as e:
-                    messagebox.showerror("Resolution Error", f"Could not resolve name '{star_name}' via Simbad.\n\nNote: AAVSO AUIDs (like 000-BJS-555) are often not recognized. Try a common catalog name (e.g., TYC, HD, or variable star name) or use Manual Coordinates.")
-                    diff_status_var.set(f"Error: Could not resolve '{star_name}'.")
-                    return
-                except Exception as e:
-                    messagebox.showerror("Resolution Error", f"Error looking up '{star_name}':\n{e}")
-                    diff_status_var.set("Error during name resolution.")
-                    return
-            
-            manual_target_coord = None
-            target_mode = target_mode_var.get()
-            if target_mode == "manual":
-                ra_str = f"{target_ra_h_var.get()}h{target_ra_m_var.get()}m{target_ra_s_var.get()}s"
-                dec_str = f"{target_dec_d_var.get()}d{target_dec_m_var.get()}m{target_dec_s_var.get()}s"
-                try:
-                    c = SkyCoord(f"{ra_str} {dec_str}")
-                    manual_target_coord = (c.ra.deg, c.dec.deg)
-                except Exception as e:
-                    messagebox.showerror("Coordinate Error", f"Invalid manual target coordinates format.\n{e}")
-                    diff_status_var.set("Error: Invalid target coordinates.")
-                    return
-            elif target_mode == "name":
-                star_name = target_name_var.get().strip()
-                if not star_name:
-                    messagebox.showerror("Name Error", "Please enter a target star name.")
-                    diff_status_var.set("Error: Empty target star name.")
-                    return
-                from astropy.coordinates import SkyCoord
-                from astropy.coordinates.name_resolve import NameResolveError
-                diff_status_var.set(f"Resolving '{star_name}' via Simbad...")
-                root.update_idletasks()
-                try:
-                    c = SkyCoord.from_name(star_name)
-                    manual_target_coord = (c.ra.deg, c.dec.deg)
-                    print(f"Resolved target '{star_name}' to RA: {c.ra.deg:.5f}, Dec: {c.dec.deg:.5f}")
-                except NameResolveError as e:
-                    messagebox.showerror("Resolution Error", f"Could not resolve target name '{star_name}' via Simbad.\n\nNote: AAVSO AUIDs (like 000-BJS-555) are often not recognized. Try a common catalog name (e.g., TYC, HD, or variable star name) or use Manual Coordinates.")
-                    diff_status_var.set(f"Error: Could not resolve target '{star_name}'.")
-                    return
-                except Exception as e:
-                    messagebox.showerror("Resolution Error", f"Error looking up target '{star_name}':\n{e}")
-                    diff_status_var.set("Error during target name resolution.")
-                    return
-
-            res = run_differential_photometry(
-                csv_b=b_csv, csv_v=v_csv, ref_catalog=cat_type,
-                k_b=vars_dict["extinction_kb"][0].get(), k_v=vars_dict["extinction_kv"][0].get(),
-                Tbv=diff_tbv_var.get(), Tb_bv=diff_tbbv_var.get(), Tv_bv=diff_tvbv_var.get(),
-                radius_arcmin=float(vars_dict["catalog_search_radius"][0].get()),
-                manual_ref_coord=manual_coord,
-                target_mode=target_mode,
-                manual_target_coord=manual_target_coord,
-                axes=color_axes
-            )
-            color_canvas.draw()
-            diff_status_var.set(res)
-        except Exception as e:
-            diff_status_var.set(f"Error: {e}")
-            messagebox.showerror("Analysis Error", str(e))
-            
-    tk.Button(tab_color_diff, text="Execute Differential Photometry", command=on_run_diff,
-              bg="#1a3a5f", fg="white", font=("Arial", 10, "bold"), pady=8).pack(pady=10)
 
     # Camera Settings (from old TAB 2)
     lf_ccd = ttk.LabelFrame(tab_settings, text="CCD Settings (Error Analysis)")
@@ -1417,9 +1975,17 @@ def run_config_gui(pipeline_callback=None):
     lf_ap = ttk.LabelFrame(tab_settings, text="Aperture Photometry")
     lf_ap.pack(fill="x", padx=10, pady=10)
     add_entry(lf_ap, "PSF Box Size (px):", "box_size", 15, 0, vtype=int)
-    add_entry(lf_ap, "Aperture Radius (px):", "aperture_radius", 5.0, 1)
-    add_entry(lf_ap, "Annulus Inner (px):", "annulus_inner", 7.0, 2)
-    add_entry(lf_ap, "Annulus Outer (px):", "annulus_outer", 13.0, 3)
+    
+    # Flexible Aperture Toggle
+    add_check(lf_ap, "Use Flexible Aperture (FWHM-based)", "use_flexible_aperture", False, 1)
+    add_entry(lf_ap, "Aperture FWHM Factor:", "aperture_fwhm_factor", 2.0, 2)
+    add_entry(lf_ap, "Annulus Inner Gap (px):", "annulus_inner_gap", 2.0, 3)
+    add_entry(lf_ap, "Annulus Width (px):", "annulus_width", 5.0, 4)
+    
+    ttk.Label(lf_ap, text="--- OR Fixed Values ---", foreground="#555", font=("Arial", 8, "italic")).grid(row=5, column=0, columnspan=2, pady=(10, 0))
+    add_entry(lf_ap, "Fixed Aperture Radius (px):", "aperture_radius", 5.0, 6)
+    add_entry(lf_ap, "Fixed Annulus Inner (px):", "annulus_inner", 7.0, 7)
+    add_entry(lf_ap, "Fixed Annulus Outer (px):", "annulus_outer", 13.0, 8)
 
     # Zero Point Calibration (from old TAB 3)
     lf_cal = ttk.LabelFrame(tab_settings, text="Zero Point Calibration")
@@ -1428,8 +1994,7 @@ def run_config_gui(pipeline_callback=None):
     add_entry(lf_cal, "Default Zero Point:", "default_zero_point", 24.0, 1)
     add_entry(lf_cal, "Min SNR for Calib:", "calib_snr_threshold", 10.0, 2)
     add_entry(lf_cal, "Catalog Search Radius (arcmin):", "catalog_search_radius", 15.0, 3)
-    add_check(lf_cal, "Run New ZP Calibration (Overwrite Default)", "run_new_calibration", True, 4)
-    add_check(lf_cal, "Run Positional Shift Analysis", "run_shift_analysis", False, 5)
+    # Checkboxes moved to Pipeline Configuration section.
 
     # Global Extinction (Shared)
     lf_ext = ttk.LabelFrame(tab_settings, text="Atmospheric Extinction (Global)")
@@ -1443,25 +2008,61 @@ def run_config_gui(pipeline_callback=None):
     lf_out.pack(fill="x", padx=10, pady=10)
     add_check(lf_out, "Print Detailed Calibration to Console", "print_detailed_calibration", False, 0)
     add_check(lf_out, "Print Massive Aperture Photometry Table", "print_star_detection_table", False, 1)
-    add_check(lf_out, "Print Individual PSF Fitting Results", "print_psf_fitting", False, 2)
+    add_check(lf_out, "Print PSF Quality & Fitting Details (Console)", "print_psf_fitting", False, 2)
     add_check(lf_out, "Display Matplotlib Plots (Blocking)", "display_plots", False, 3)
-    add_entry(lf_out, "Max Plots to Show/Save per file:", "max_plots_to_show_per_file", 3, 4, vtype=int)
+    add_entry(lf_out, "Max PSF plots to show/save per file:", "max_plots_to_show_per_file", 3, 4, vtype=int)
 
-    # Session Management
-    lf_session = ttk.LabelFrame(tab_settings, text="Session Management")
-    lf_session.pack(fill="x", padx=10, pady=10)
+
+    # --- TAB 5: About ---
+    tab_about_outer = ttk.Frame(notebook)
+    notebook.add(tab_about_outer, text="ℹ About")
     
-    ttk.Button(lf_session, text="Save Session", command=save_session).grid(row=0, column=0, padx=10, pady=5)
-    ttk.Button(lf_session, text="Load Session", command=load_session).grid(row=0, column=1, padx=10, pady=5)
-    ttk.Label(lf_session, text="* Session auto-loads on startup. Settings are saved to calibra_session.json", 
-              foreground="#555", font=("Arial", 8, "italic")).grid(row=0, column=2, padx=10)
+    about_scroll = ScrollableFrame(tab_about_outer)
+    about_scroll.pack(fill="both", expand=True)
+    tab_about = about_scroll.scrollable_frame
 
-    # Auto-load on startup
-    load_session()
+    about_container = tk.Frame(tab_about, padx=30, pady=10, bg="white")
+    about_container.pack(fill="both", expand=True)
+    
+    # Try to load Logo
+    logo_path = os.path.join(os.path.dirname(__file__), "calibra_logo.png")
+
+    try:
+        from PIL import Image, ImageTk
+        img = Image.open(logo_path)
+        img = img.resize((250, 250), Image.Resampling.LANCZOS)
+        logo_img = ImageTk.PhotoImage(img)
+        lbl_logo = tk.Label(about_container, image=logo_img, bg="white")
+        lbl_logo.image = logo_img # Keep reference
+        lbl_logo.pack(pady=(0, 5))
+    except Exception as e:
+        # Fallback if PIL is missing or file not found
+        tk.Label(about_container, text="[ CALIBRA ]", font=("Arial", 24, "bold"), bg="white", fg=primary_blue).pack(pady=(0, 20))
+    
+    tk.Label(about_container, text="Calibra: An automated photometric analysis & calibration toolkit", font=("Arial", 16, "bold"), anchor="w", bg="white", fg=primary_blue).pack(fill="x")
+    
+    info_frame = tk.Frame(about_container, bg="white")
+    info_frame.pack(fill="x", pady=10)
+    tk.Label(info_frame, text="Version: 3.0 \tLatest Update: 2026-05-10", font=("Arial", 10), anchor="w", bg="white").pack(fill="x")
+    
+    tk.Label(about_container, text="Description:", font=("Arial", 11, "bold"), anchor="w", bg="white", fg=primary_blue).pack(fill="x", pady=(10, 5))
+    desc_text = (
+        "Calibra uses star detection, sub-pixel PSF fitting, aperture photometry, \n"
+        "zero-point calibration, and offers determination of color transformations between filters. \n"
+        "For the analysis, Calibra can use the online catalogues ATLAS-RefCat2, APASS DR9, \n"
+        "Landolt Standards Catalogue and Gaia DR3, or a user-provided catalogue.\n"
+        "\n"
+        "Finally, Calibra can produce light curves for variable stars from a series of images and create AAVSO-formatted text files.\n"
+    )
+    tk.Label(about_container, text=desc_text, justify=tk.LEFT, font=("Arial", 10), anchor="w", bg="white").pack(fill="x")
 
     # --- TAB 5: Help ---
-    tab_help = ttk.Frame(notebook)
-    notebook.add(tab_help, text="Help")
+    tab_help_outer = ttk.Frame(notebook)
+    notebook.add(tab_help_outer, text="❓ Help")
+    
+    help_scroll = ScrollableFrame(tab_help_outer)
+    help_scroll.pack(fill="both", expand=True)
+    tab_help = help_scroll.scrollable_frame
     
     help_frame = tk.Frame(tab_help, padx=20, pady=20)
     help_frame.pack(fill="both", expand=True)
@@ -1510,114 +2111,24 @@ def run_config_gui(pipeline_callback=None):
     sys.stdout = StdoutRedirector(console)
     sys.stderr = StdoutRedirector(console)
 
-    def on_run():
-        vars_vals = {}
+    # Ensure closing main window closes everything and saves session
+    def on_closing():
         try:
-            for k, (var, vtype) in vars_dict.items():
-                vars_vals[k] = vtype(var.get())
-            
-            # Reconstruct dictionary bounds
-            config_run = {
-                'input_pattern': vars_vals.pop('input_pattern'),
-                'reference_catalog': vars_vals.pop('reference_catalog'),
-                'detect_sigma': vars_vals.pop('detect_sigma'),
-                'saturation_limit': vars_vals.pop('saturation_limit'),
-                'box_size': vars_vals.pop('box_size'),
-                'aperture_radius': vars_vals.pop('aperture_radius'),
-                'annulus_inner': vars_vals.pop('annulus_inner'),
-                'annulus_outer': vars_vals.pop('annulus_outer'),
-                'match_tolerance_arcsec': vars_vals.pop('match_tolerance_arcsec'),
-                'default_zero_point': vars_vals.pop('default_zero_point'),
-                'calib_snr_threshold': vars_vals.pop('calib_snr_threshold'),
-                'catalog_search_radius': vars_vals.pop('catalog_search_radius'),
-                'run_new_calibration': vars_vals.pop('run_new_calibration'),
-                'run_shift_analysis': vars_vals.pop('run_shift_analysis'),
-                'ccd_gain': vars_vals.pop('ccd_gain'),
-                'ccd_read_noise': vars_vals.pop('ccd_read_noise'),
-                'ccd_dark_current': vars_vals.pop('ccd_dark_current'),
-                'print_detailed_calibration': vars_vals.pop('print_detailed_calibration'),
-                'print_star_detection_table': vars_vals.pop('print_star_detection_table'),
-                'print_psf_fitting': vars_vals.pop('print_psf_fitting'),
-                'display_plots': vars_vals.pop('display_plots'),
-                'max_plots_to_show_per_file': vars_vals.pop('max_plots_to_show_per_file'),
-                'dao_sharplo': vars_vals.pop('dao_sharplo'),
-                'dao_sharphi': vars_vals.pop('dao_sharphi'),
-                'dao_roundlo': vars_vals.pop('dao_roundlo'),
-                'dao_roundhi': vars_vals.pop('dao_roundhi'),
-                'filter_mode': vars_vals.pop('filter_mode'),
-            }
-            
-            config_run['xy_bounds'] = {
-                'x_min': vars_vals.pop('xy_x_min'),
-                'x_max': vars_vals.pop('xy_x_max'),
-                'y_min': vars_vals.pop('xy_y_min'),
-                'y_max': vars_vals.pop('xy_y_max')
-            }
-            config_run['radec_bounds'] = {
-                'ra_min': vars_vals.pop('ra_min'),
-                'ra_max': vars_vals.pop('ra_max'),
-                'dec_min': vars_vals.pop('dec_min'),
-                'dec_max': vars_vals.pop('dec_max')
-            }
-            config_run['calibration_settings'] = {
-                'enable': vars_vals.pop('enable_calibration'),
-                'bias_path': vars_vals.pop('bias_path'),
-                'flat_v_path': vars_vals.pop('flat_v_path'),
-                'flat_b_path': vars_vals.pop('flat_b_path')
-            }
-            
-            if pipeline_callback:
-                # Run in a separate thread to keep UI alive
-                run_btn.config(state=tk.DISABLED, text="Processing...")
-                
-                def thread_target():
-                    try:
-                        results = pipeline_callback(config_run)
-                        # Auto-populate Color Calibration tab if B/V pairs found
-                        if results:
-                            for csv_path, filt in results:
-                                f_upper = filt.upper()
-                                if 'B' in f_upper:
-                                    vars_dict['color_b_csv'][0].set(csv_path)
-                                elif 'V' in f_upper:
-                                    vars_dict['color_v_csv'][0].set(csv_path)
-                    finally:
-                        run_btn.config(state=tk.NORMAL, text="Run Pipeline")
-                
-                thread = threading.Thread(target=thread_target)
-                thread.daemon = True
-                thread.start()
-            else:
-                print("No pipeline callback provided.")
-                
-        except ValueError as e:
-            messagebox.showerror("Input Error", "Please ensure all numerical fields contain valid numbers.")
+            save_session()
+        except:
+            pass
+        root.destroy()
+        sys.exit(0)
 
-    # Detect & Measure Run Button
-    run_btn = tk.Button(tab_detect, text="Run Measurement Pipeline", command=on_run, 
-                        bg=accent_green, fg="white", font=("Arial", 11, "bold"), 
-                        width=30, relief="flat", pady=10)
-    run_btn.pack(pady=20)
-
-    # Action Buttons (Bottom Bar - only Exit now)
-    btn_frame = tk.Frame(root, bg="#f0f2f5")
-    btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=10)
-    
-    # Repack notebook to ensure btn_frame is not pushed off
-    notebook.pack_forget()
-    notebook.pack(side=tk.TOP, pady=10, expand=True, fill='both')
-    
-    exit_btn = tk.Button(btn_frame, text="Exit Calibra", command=root.destroy, width=15, 
+    exit_btn = tk.Button(btn_frame, text="Exit Calibra", command=on_closing, width=15, 
                            font=("Arial", 10), relief="flat", bg="#f44336", fg="white")
     exit_btn.pack(side=tk.LEFT, padx=10)
 
-    # Ensure closing main window closes everything
-    def on_closing():
-        root.destroy()
-        sys.exit(0)
-        
     root.protocol("WM_DELETE_WINDOW", on_closing)
-    console_win.protocol("WM_DELETE_WINDOW", lambda: None) # Prevent closing console individually if desired, or just let it close
+    console_win.protocol("WM_DELETE_WINDOW", lambda: None) 
+
+    # Auto-load previous session
+    load_session()
 
     # Run the UI loop
     root.mainloop()
