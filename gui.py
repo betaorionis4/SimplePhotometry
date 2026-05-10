@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from astropy.coordinates import SkyCoord
 import astropy.units as u
+from photometry.plate_solve import plate_solvem
 
 class StdoutRedirector:
     def __init__(self, text_widget):
@@ -308,6 +309,101 @@ def run_config_gui(pipeline_callback=None):
     add_file_selector(lf_calib, "Master Bias:", "bias_path", r"C:\Astro\Photometry_Calibra\bias_and_flats\Master_Bias_1x1_gain_0.fits", 1, initial_dir="bias_and_flats")
     add_file_selector(lf_calib, "Master Flat (V):", "flat_v_path", r"C:\Astro\Photometry_Calibra\bias_and_flats\FLAT_Vmag_1x1_gain_0.fits", 2, initial_dir="bias_and_flats")
     add_file_selector(lf_calib, "Master Flat (B):", "flat_b_path", r"C:\Astro\Photometry_Calibra\bias_and_flats\FLAT_Bmag_1x1_gain_0.fits", 3, initial_dir="bias_and_flats")
+
+    # --- TAB: Plate Solve ---
+    tab_plate_outer = ttk.Frame(notebook)
+    notebook.add(tab_plate_outer, text="🌌 Plate Solve")
+    
+    plate_scroll = ScrollableFrame(tab_plate_outer)
+    plate_scroll.pack(fill="both", expand=True)
+    tab_plate = plate_scroll.scrollable_frame
+
+    lf_plate_info = ttk.LabelFrame(tab_plate, text="Plate Solving with ASTAP")
+    lf_plate_info.pack(fill="x", padx=10, pady=10)
+    ttk.Label(lf_plate_info, text="Use this tab to plate-solve your raw FITS files using ASTAP.\nThis will create new files with a suffix (e.g., '_wcs') and preserve your originals.", justify=tk.LEFT).pack(padx=10, pady=10)
+
+    lf_plate_io = ttk.LabelFrame(tab_plate, text="Input & Settings")
+    lf_plate_io.pack(fill="x", padx=10, pady=10)
+    
+    ttk.Label(lf_plate_io, text="FITS File Pattern:").grid(row=0, column=0, sticky=tk.W, padx=10, pady=5)
+    plate_pattern_var = tk.StringVar(value=r"C:\Astro\Photometry_Calibra\fitsfiles\*.fits")
+    vars_dict["plate_pattern"] = (plate_pattern_var, str)
+    ttk.Entry(lf_plate_io, textvariable=plate_pattern_var, width=65).grid(row=0, column=1, sticky=tk.W, padx=10, pady=5)
+    
+    def browse_plate_dir():
+        from tkinter import filedialog
+        dirname = filedialog.askdirectory(initialdir=r"C:\Astro\Photometry_Calibra", title="Select FITS Directory")
+        if dirname:
+            plate_pattern_var.set(os.path.join(dirname, "*.fits"))
+            
+    ttk.Button(lf_plate_io, text="Browse...", command=browse_plate_dir).grid(row=0, column=2, padx=5)
+
+    add_entry(lf_plate_io, "Filename Suffix:", "plate_suffix", "wcs", 1, col_offset=0, vtype=str)
+    add_entry(lf_plate_io, "Search Radius (deg):", "plate_radius", 5.0, 1, col_offset=1)
+    
+    ttk.Label(lf_plate_io, text="ASTAP Executable:").grid(row=2, column=0, sticky=tk.W, padx=10, pady=5)
+    astap_path_var = tk.StringVar(value="astap")
+    vars_dict["astap_path"] = (astap_path_var, str)
+    ttk.Entry(lf_plate_io, textvariable=astap_path_var, width=65).grid(row=2, column=1, sticky=tk.W, padx=10, pady=5)
+    
+    def browse_astap():
+        from tkinter import filedialog
+        fname = filedialog.askopenfilename(title="Select ASTAP Executable")
+        if fname: astap_path_var.set(fname)
+    ttk.Button(lf_plate_io, text="Browse...", command=browse_astap).grid(row=2, column=2, padx=5)
+
+    add_check(lf_plate_io, "Annotate solved images (requires main astap.exe)", "plate_annotate", False, 3, col_offset=0)
+
+    plate_status_var = tk.StringVar(value="Ready.")
+    ttk.Label(tab_plate, textvariable=plate_status_var, font=("Arial", 9, "italic")).pack(pady=5)
+
+    def on_run_plate_solve():
+        pattern = plate_pattern_var.get()
+        suffix = vars_dict["plate_suffix"][0].get()
+        radius = vars_dict["plate_radius"][0].get()
+        exe = astap_path_var.get()
+        annotate = vars_dict["plate_annotate"][0].get()
+        
+        if not pattern:
+            messagebox.showerror("Error", "Please provide an input pattern.")
+            return
+            
+        plate_status_var.set("Plate solving in progress...")
+        run_plate_btn.config(state=tk.DISABLED, text="Solving...")
+        
+        def plate_thread():
+            try:
+                print(f"\n--- Starting Batch Plate Solve ---")
+                print(f"Pattern: {pattern}")
+                print(f"Suffix: {suffix}")
+                
+                solved = plate_solvem(pattern, suffix=suffix, astap_exe=exe, search_radius=radius, annotate=annotate)
+                
+                if solved:
+                    msg = f"Successfully solved {len(solved)} files."
+                    print(f"\n{msg}")
+                    root.after(0, lambda: messagebox.showinfo("Success", msg))
+                else:
+                    msg = "No files were solved. Check the console for details."
+                    print(f"\n{msg}")
+                    root.after(0, lambda: messagebox.showwarning("Warning", msg))
+                    
+                root.after(0, lambda: plate_status_var.set("Complete."))
+            except Exception as e:
+                print(f"Plate solve error: {e}")
+                root.after(0, lambda: messagebox.showerror("Error", f"Plate solve failed: {e}"))
+                root.after(0, lambda: plate_status_var.set("Error occurred."))
+            finally:
+                root.after(0, lambda: run_btn_plate_solve_relabel())
+
+        def run_btn_plate_solve_relabel():
+            run_plate_btn.config(state=tk.NORMAL, text="Run Plate Solver")
+
+        threading.Thread(target=plate_thread, daemon=True).start()
+
+    run_plate_btn = tk.Button(tab_plate, text="Run Plate Solver", command=on_run_plate_solve,
+                               bg="#0288d1", fg="white", font=("Arial", 11, "bold"), pady=10, width=30)
+    run_plate_btn.pack(pady=20)
 
     # --- TAB 3: Color & Differential ---
     tab_color_diff_outer = ttk.Frame(notebook)
