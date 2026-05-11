@@ -50,37 +50,37 @@ $$\sigma_{flux}^2 = \frac{Flux}{Gain} + Area_{ap} \cdot \sigma_{bg}^2 + \frac{Ar
 - **SNR (Signal-to-Noise Ratio)**: Calculated as $Net Flux / \sigma_{flux}$. 
 - **Filtering**: Detections with $SNR < 3.0$ are automatically flagged as unreliable.
 
-#### 1.1 Session Logging
+### 2.4 Session Logging
 Calibra automatically generates a permanent record of every analysis run. 
 - **Console Window**: A separate "Process Console" window opens to show real-time progress.
 - **Log Files**: All console output is simultaneously saved to a `.txt` file in the `photometry_output/logs/` directory.
 - **Naming Convention**: Logs are named uniquely to prevent overwriting, e.g., `log_[FileName]_[Filter]_[Catalog].txt`. This allows you to track results across different calibration attempts or reference catalogs.
 
-## 2.0 FITS Pre-processing (Calibration)
+## 3. FITS Pre-processing (Calibration)
 Calibra can perform basic instrumental calibration (Bias and Flat-fielding) for raw FITS files directly from the camera.
 
 > [!IMPORTANT]
 > **Plate Solving Required**: Even when using Calibra's pre-processing, your raw FITS files **must already be plate solved** (i.e., contain valid WCS headers like RA and DEC). Calibra uses these coordinates to match stars with online catalogs. If your file is not plate solved, automated calibration will fail.
 
-## 2.1 Enabling Calibration
+## 3.1 Enabling Calibration
 In the **"Pre-processing"** tab of the Configuration GUI:
 1.  Check **"Enable Pre-processing (Apply Bias/Flats)"**.
 2.  Select your **Master Bias** file (Default: `C:\Astro\Photometry_Calibra\bias_and_flats\Master_Bias_1x1_gain_0.fits`).
 3.  Select your **Master Flat** files for both V-mag and B-mag.
 
-## 2.2 Automatic Filter Detection
+## 3.2 Automatic Filter Detection
 Calibra automatically reads the `FILTER` keyword from the FITS header of your target image.
 - If the filter contains **"B"**, the B-mag Master Flat is used.
 - Otherwise, the V-mag Master Flat is used by default.
 
-## 2.3 Output of Calibrated Files
+## 3.3 Output of Calibrated Files
 When pre-processing is enabled, Calibra performs the following operation:
 `Calibrated = (Raw - Bias) / (Flat / median(Flat))`
 I.e. it is assumed that the flat is already corrected for bias!
 
 The resulting calibrated images are saved as new FITS files in a `calibrated/` subfolder located within your input FITS directory (e.g., `C:\Astro\Photometry_Calibra\fitsfiles\calibrated\`). These files are then used for the subsequent star detection and photometry steps.
 
-## 2.4 Online Catalog Transformations
+## 3.4 Online Catalog Transformations
 Calibra defaults to **ATLAS-RefCat2** for high-precision zero-point calibration, but also supports **APASS DR9**, **GAIA_DR3**, and the **Landolt Standard Star Catalogue**.
 
 Since **ATLAS-RefCat2** and **GAIA_DR3** do not natively use the Johnson V/B filters, Calibra applies rigorous mathematical transformations to convert their native photometry for zero-point calibration. 
@@ -112,7 +112,7 @@ Based on **GAIA DR3 Documentation,Table 5.9**, which provides coefficients for V
 - $B = G - 0.01448 + 0.6874 \cdot C + 0.3604 \cdot C^2 - 0.06718 \cdot C^3 + 0.006061 \cdot C^4$
 - *where $C = G_{BP} - G_{RP}$*
 
-## 2.5 AAVSO VSX Integration (Variable Star Exclusion)
+## 3.5 AAVSO VSX Integration (Variable Star Exclusion)
 To ensure the highest photometric rigor, Calibra automatically cross-matches all detected stars and reference catalogs against the **AAVSO International Variable Star Index (VSX)** via VizieR (`B/vsx/vsx`).
 
 - **Calibration Rigor**: Any reference star found within 2 arcseconds of a known VSX variable is automatically excluded from the Zero-Point derivation.
@@ -122,7 +122,7 @@ To ensure the highest photometric rigor, Calibra automatically cross-matches all
 
 ---
 
-## 3. The Processing Pipeline (A-G)
+## 4. The Processing Pipeline (A-G)
 
 The pipeline processes each FITS file through seven sequential modules:
 
@@ -170,11 +170,11 @@ A specialized post-processing tool for deriving instrumental **Color Terms**.
 
 ---
 
-## 4. Differential Photometry
+## 5. Differential Photometry
 
 The Differential Photometry module is intended to compute AAVSO-ready standard magnitudes for every star in a field relative to a designated reference star. The reference star can be either automatically selected by the pipeline or manually specified by the user to focus on measuring magnitudes of variable stars using a known comparison star.
 
-### 4.1 Methodology
+### 5.1 Methodology
 - **Target Matching**: The module automatically cross-matches stars from your B-filter and V-filter results (using a 2-arcsecond search radius) to form reliable $(b-v)$ pairs.
 - **Reference Catalog Query**: The matched coordinates are queried against your chosen standard catalog (e.g., ATLAS, APASS, Landolt). The catalog search covers a field of view that is defined by the "Catalog Search Radius" in the GUI.
 - **Reference Star Selection**:
@@ -187,26 +187,26 @@ The Differential Photometry module is intended to compute AAVSO-ready standard m
   - **Manual Mode**: The user inputs specific RA and Dec coordinates ($h, m, s$ and $d, m, s$). The pipeline finds the matched detection within a 4-arcsecond tolerance of those coordinates, verifies it has catalog data, and strictly forces it to be the reference anchor.
 - **Zero Point Calculation**: Using the Color Transformation Coefficients ($T_{bv}, T_{b\_bv}, T_{v\_bv}$) and atmospheric extinction ($k_B, k_V$), the pipeline derives the instrumental zero points ($Z_{BV}, Z_B, Z_V$) relative to this reference star. The color transformation coefficients can be taken from the Color Transformation Calibration module (see Section 3.G) or manually entered by the user.
 
-### 4.2 Target Selection Modes
+### 5.2 Target Selection Modes
 In the Differential Photometry tab, you can define which stars to process:
 - **Analyze All Stars (Default)**: The pipeline computes standard magnitudes for every common B/V pair in the image. This is useful for survey work or verifying field-wide accuracy.
 - **Analyze a specific Target Pair**: The pipeline isolates a single star (via Name/SIMBAD or Manual Coordinates) and computes standard magnitudes for only that object. This mode skips the population-wide Accuracy Evaluation plotting as it is not statistically valid for a single target.
 
-### 4.3 Standard Magnitude Output
+### 5.3 Standard Magnitude Output
 These zero points are instantly applied to all other stars in the field to get standard magnitudes ($B, V$) and color index ($B-V$). The final standard magnitudes and color index are saved in a Markdown table (`differential_photometry_results.md`) alongside a more detailed CSV file (with all the instrumental data, errors, and variability flags).
 
-### 4.4 Accuracy Evaluation
+### 5.4 Accuracy Evaluation
 To evaluate the calibration quality, the pipeline automatically compares the internally computed standard magnitudes against the actual catalog magnitudes for all matching stars (excluding the reference anchor and any known VSX variables).
 - **Statistical Fitting**: It calculates the deviations ($\Delta B$, $\Delta V$, $\Delta(B-V)$) and fits a Gaussian distribution to determine the mean offset ($\mu$) and standard deviation/scatter ($\sigma$).
 - **Plotting**: It generates a 3-panel histogram plot with the Gaussian fits overlaid (`photometry_plots/diff_photometry_deviations.png`), allowing you to rapidly identify any systematic errors or estimate your measurement uncertainties. The statistical fits are appended to the `differential_photometry_report.md`.
 
 ---
 
-## 5. Time-Series Photometry & Light Curves
+## 6. Time-Series Photometry & Light Curves
 
 The Light Curves module performs **ensemble differential time-series photometry** on a sequence of FITS images to produce calibrated light curves of variable stars.
 
-### 5.1 Ensemble Comparison Stars
+### 6.1 Ensemble Comparison Stars
 
 Rather than relying on a single comparison star (which may itself vary slightly, have a bad pixel, or land on an image artifact in some frames), Calibra supports up to **5 comparison stars** measured simultaneously. Each star's name can be resolved via SIMBAD, and its standard magnitude and $B-V$ color can be fetched automatically from the selected reference catalog.
 
@@ -220,7 +220,7 @@ The ensemble zero point is the mean of the individual values:
 
 $$\overline{ZP} = \frac{1}{N} \sum_{i=1}^{N} ZP_i$$
 
-### 5.2 Calibration of the Target
+### 6.2 Calibration of the Target
 
 The target star's calibrated magnitude in each frame is:
 
@@ -228,7 +228,7 @@ $$V_\text{target} = m_{\text{inst,target}} - k \cdot X + T_{V_{bv}} \cdot (B-V)_
 
 Note that $(B-V)_\text{target}$ is a user-supplied assumed value. Since it is held constant across all frames, any error in this assumption shifts the entire light curve by a fixed offset but does **not** affect the measured amplitude or period of variability.
 
-### 5.3 Uncertainty Propagation
+### 6.3 Uncertainty Propagation
 
 The total uncertainty on each data point combines two independent sources in quadrature:
 
@@ -241,7 +241,7 @@ where:
 
 When only a single comparison star is used ($N=1$), a floor value of $\sigma_{\overline{ZP}} = 0.01$ mag is applied to prevent unrealistically small error bars that would hide the inherent uncertainty of using a single calibrator.
 
-### 5.4 Output
+### 6.4 Output
 
 The module produces three files in `photometry_output/`:
 
@@ -253,17 +253,17 @@ The module produces three files in `photometry_output/`:
 
 ---
 
-## 6. Running the Pipeline: The Configuration GUI (v3.0)
+## 7. Running the Pipeline: The Configuration GUI (v3.0)
 
 Launch the pipeline via `python calibra.py` to open the **Configuration GUI**. In v3.0, the interface is split into a persistent top panel and a set of six processing tabs:
 
-### 6.1 FITS File Manager (Top Panel)
+### 7.1 FITS File Manager (Top Panel)
 Always visible at the top of the window, this centralized manager allows you to load, preview, and select your FITS files.
 - **Add Files/Directory**: Load your images.
 - **Preview**: View FITS headers directly in the GUI.
 - **Selection**: Check the boxes next to files to select them for Plate Solving, Calibration, or Analysis.
 
-### 6.2 Processing Tabs
+### 7.2 Processing Tabs
 1.  **About**: Version information and a summary of Calibra's capabilities.
 2.  **⚙ Settings**: All shared configuration in one scrollable tab:
     - **Reference Catalog**: Select from ATLAS, APASS, GAIA, Landolt.
@@ -291,9 +291,9 @@ Always visible at the top of the window, this centralized manager allows you to 
 
 ---
 
-## 7. Understanding the Output
+## 8. Understanding the Output
 
-### 7.1 Results CSV (`photometry_output/`)
+### 8.1 Results CSV (`photometry_output/`)
 The primary output for every image. Key columns include:
 - `refined_x` / `refined_y`: The high-precision sub-pixel coordinates.
 - `ra_hms` / `dec_dms`: Celestial coordinates from the WCS header.
@@ -303,7 +303,7 @@ The primary output for every image. Key columns include:
 - `is_variable`: A "Yes/No" flag indicating if the star matched a record in the AAVSO VSX catalog.
 - `airmass`: The atmospheric airmass calculated from the FITS header.
 
-### 7.2 Diagnostic Plots (`photometry_plots/`)
+### 8.2 Diagnostic Plots (`photometry_plots/`)
 If enabled, the pipeline saves a four-panel graphic for each star showing:
 1.  **Raw Data**: The original pixel cutout.
 2.  **Gaussian Model**: The idealized mathematical fit.
@@ -312,7 +312,7 @@ If enabled, the pipeline saves a four-panel graphic for each star showing:
 
 ---
 
-## 8. Troubleshooting & Tips
+## 9. Troubleshooting & Tips
 - **No Stars Found?** Verify your `Detection Sigma`. Lower it (e.g., to 3.0) for faint targets or increase it (e.g., to 10.0) for crowded fields.
 - **Calibration Failures?** 
     - Check if the FITS header has valid `RA`/`DEC` keywords for online queries.
