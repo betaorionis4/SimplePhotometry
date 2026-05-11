@@ -4,7 +4,7 @@ Welcome to **Calibra**: an automated photometric analysis & calibration toolkit.
 
 This short manual provides some background on the software's architecture, mathematical principles, and operational workflow.
 
-The code can identify stars, perform PSF fitting to extract fluxes (using aperture photometry), and compares instrumental magnitudes with refernces magnitudes from catalogues available online (e.g. APASS DR9). Note that the provided fits file(s) need to have a WCS (i.e. they need to be plate solved).
+The code can identify stars, perform PSF fitting to extract fluxes (using aperture photometry), and compares instrumental magnitudes with references magnitudes from catalogues available online (e.g. APASS DR9). Note that the provided fits file(s) need to have a WCS. If your files are not already plate solved, Calibra can automatically solve them using the integrated ASTAP Plate Solving tab.
 
 Make sure that the code uses the right filter. I use Johnson V and B filters, that are labled 'V_mag' and 'B_mag' by my imaging software - I use N.I.N.A. - in the FITS header.
 
@@ -60,7 +60,7 @@ Calibra automatically generates a permanent record of every analysis run.
 Calibra can perform basic instrumental calibration (Bias and Flat-fielding) for raw FITS files directly from the camera.
 
 > [!IMPORTANT]
-> **Plate Solving Required**: Even when using Calibra's pre-processing, your raw FITS files **must already be plate solved** (i.e., contain valid WCS headers like RA and DEC). Calibra uses these coordinates to match stars with online catalogs. If your file is not plate solved, automated calibration will fail.
+> **Plate Solving Required**: Even when using Calibra's pre-processing, your FITS files **must be plate solved** (i.e., contain valid WCS headers like RA and DEC) before running the main analysis. Calibra uses these coordinates to match stars with online catalogs. If your raw files are not plate solved, you can use Calibra's integrated **Plate Solving** tab (via ASTAP) to automatically solve them prior to analysis.
 
 ## 3.1 Enabling Calibration
 In the **"Pre-processing"** tab of the Configuration GUI:
