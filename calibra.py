@@ -151,13 +151,21 @@ def process_file(fits_filename, config):
 
     # 4. Zero Point Calibration
     filter_name = header.get('FILTER', 'V')
+    b_key = config.get('filter_b_keyword', 'BMAG').upper()
+    if b_key in filter_name.upper():
+        def_zp = config.get('default_zp_b', 24.0)
+    else:
+        def_zp = config.get('default_zp_v', 24.0)
+
     output_report = os.path.join('photometry_output', f'calibration_report_{base_name}.md')
-    match_and_calibrate(results, config['reference_catalog'], filter_name, config['match_tolerance_arcsec'],
-                        default_zp=config['default_zero_point'], run_new_calibration=config['run_new_calibration'],
+    res_zp = match_and_calibrate(results, config['reference_catalog'], filter_name, config['match_tolerance_arcsec'],
+                        default_zp=def_zp, run_new_calibration=config['run_new_calibration'],
                         output_report=output_report, center_ra=center_ra, center_dec=center_dec,
                         snr_threshold=config['calib_snr_threshold'],
                         print_to_console=config['print_detailed_calibration'],
                         header=header, radius_arcmin=config.get('catalog_search_radius', 15.0))
+    
+    calc_zp = res_zp[0] if res_zp else def_zp
 
 
     # Calculate Detection Limits
@@ -227,7 +235,7 @@ def process_file(fits_filename, config):
     print("Done!\n")
     if hasattr(sys.stdout, 'set_log_file'):
         sys.stdout.set_log_file(None)
-    return output_csv, filt
+    return output_csv, filt, calc_zp
 
 def run_pipeline(cfg):
     input_pattern = cfg['input_pattern']

@@ -106,7 +106,8 @@
     "annulus_inner": 7.0,
     "annulus_outer": 13.0,
     "match_tolerance_arcsec": 8.0,
-    "default_zero_point": 24.0,
+    "default_zp_v": 24.034,
+    "default_zp_b": 23.68,
     "calib_snr_threshold": 10.0,
     "catalog_search_radius": 45.0,
     "extinction_kv": 0.2,
@@ -191,6 +192,8 @@
         "C:/Astro/Photometry_Calibra/fitsfiles_series\\corr_Master_L_AE_00085.fits",
         "C:/Astro/Photometry_Calibra/fitsfiles_series\\corr_Master_L_AE_00086.fits",
         "C:/Astro/Photometry_Calibra/fitsfiles_series\\corr_Master_L_AE_00087.fits",
-        "C:/Astro/Photometry_Calibra/fitsfiles_series\\corr_Master_L_AE_00088.fits"
+        "C:/Astro/Photometry_Calibra/fitsfiles_series\\corr_Master_L_AE_00088.fits",
+        "C:/Astro/Photometry_Calibra/fitsfiles_cal/AE_UMa_Bmag_April13_stacked.fits",
+        "C:/Astro/Photometry_Calibra/fitsfiles_cal/AE_UMa_Vmag_April13_stacked.fits"
     ]
 }

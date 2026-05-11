@@ -73,6 +73,14 @@ def run_config_gui(pipeline_callback=None):
     root.resizable(True, True)
     root.configure(bg="#f0f2f5") 
 
+    # Fix for Windows Taskbar Icon
+    if sys.platform == 'win32':
+        import ctypes
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("google.calibra.v3")
+        except:
+            pass
+
     # Set Window Icon
     logo_path = os.path.join(os.path.dirname(__file__), "calibra_logo.png")
     if os.path.exists(logo_path):
@@ -232,7 +240,10 @@ def run_config_gui(pipeline_callback=None):
                 'annulus_inner': vars_vals.pop('annulus_inner'),
                 'annulus_outer': vars_vals.pop('annulus_outer'),
                 'match_tolerance_arcsec': vars_vals.pop('match_tolerance_arcsec'),
-                'default_zero_point': vars_vals.pop('default_zero_point'),
+                'default_zp_v': vars_vals.pop('default_zp_v'),
+                'default_zp_b': vars_vals.pop('default_zp_b'),
+                'filter_v_keyword': vars_vals.pop('filter_v_keyword'),
+                'filter_b_keyword': vars_vals.pop('filter_b_keyword'),
                 'calib_snr_threshold': vars_vals.pop('calib_snr_threshold'),
                 'catalog_search_radius': vars_vals.pop('catalog_search_radius'),
                 'run_new_calibration': vars_vals.pop('run_new_calibration'),
@@ -283,16 +294,34 @@ def run_config_gui(pipeline_callback=None):
                 def thread_target():
                     try:
                         results = pipeline_callback(config_run)
-                        # Auto-populate Color Calibration tab if B/V pairs found
                         if results:
-                            for csv_path, filt in results:
-                                f_upper = filt.upper()
-                                if 'B' in f_upper:
-                                    vars_dict['color_b_csv'][0].set(csv_path)
-                                elif 'V' in f_upper:
-                                    vars_dict['color_v_csv'][0].set(csv_path)
+                            last_zp_v = None
+                            last_zp_b = None
+                            for res in results:
+                                # results is a list of (output_csv, filt, calc_zp)
+                                if len(res) >= 3:
+                                    csv_path, filt, zp_val = res
+                                    f_upper = str(filt).upper()
+                                    b_key = config_run.get('filter_b_keyword', 'BMAG').upper()
+                                    if b_key in f_upper:
+                                        vars_dict['color_b_csv'][0].set(csv_path)
+                                        last_zp_b = zp_val
+                                    else:
+                                        vars_dict['color_v_csv'][0].set(csv_path)
+                                        last_zp_v = zp_val
+                                elif len(res) == 2:
+                                    csv_path, filt = res
+                                    f_upper = str(filt).upper()
+                                    if 'B' in f_upper: vars_dict['color_b_csv'][0].set(csv_path)
+                                    else: vars_dict['color_v_csv'][0].set(csv_path)
+                            
+                            # Update GUI with latest calculated ZPs
+                            if last_zp_v is not None:
+                                root.after(0, lambda v=last_zp_v: vars_dict["default_zp_v"][0].set(round(v, 3)))
+                            if last_zp_b is not None:
+                                root.after(0, lambda v=last_zp_b: vars_dict["default_zp_b"][0].set(round(v, 3)))
                     finally:
-                        run_btn.config(state=tk.NORMAL, text="Run Pipeline")
+                        run_btn.config(state=tk.NORMAL, text="Run Analysis Pipeline on Selected")
                 
                 thread = threading.Thread(target=thread_target)
                 thread.daemon = True
@@ -430,9 +459,24 @@ def run_config_gui(pipeline_callback=None):
                     manual_coord = (c.ra.deg, c.dec.deg)
                     print(f"Resolved '{star_name}' to RA: {c.ra.deg:.5f}, Dec: {c.dec.deg:.5f}")
                 except NameResolveError as e:
-                    messagebox.showerror("Resolution Error", f"Could not resolve name '{star_name}' via Simbad.\n\nNote: AAVSO AUIDs (like 000-BJS-555) are often not recognized. Try a common catalog name (e.g., TYC, HD, or variable star name) or use Manual Coordinates.")
-                    diff_status_var.set(f"Error: Could not resolve '{star_name}'.")
-                    return
+                    # Fallback to local catalog
+                    try:
+                        from photometry.calibration import read_reference_catalog
+                        cat_file = vars_dict["reference_catalog"][0].get()
+                        if os.path.exists(cat_file):
+                            ref_stars = read_reference_catalog(cat_file)
+                            for s in ref_stars:
+                                if str(s.get('id', '')).upper() == star_name.upper():
+                                    manual_coord = (s['ra_deg'], s['dec_deg'])
+                                    print(f"Resolved '{star_name}' to RA: {manual_coord[0]:.5f}, Dec: {manual_coord[1]:.5f} from local catalog.")
+                                    break
+                    except Exception:
+                        pass
+                    
+                    if manual_coord is None:
+                        messagebox.showerror("Resolution Error", f"Could not resolve name '{star_name}' via Simbad or Local Catalog.\n\nNote: Make sure your AAVSO CSV is loaded in the Analysis tab if you are using AUIDs like 000-BJS-555.")
+                        diff_status_var.set(f"Error: Could not resolve '{star_name}'.")
+                        return
                 except Exception as e:
                     messagebox.showerror("Resolution Error", f"Error looking up '{star_name}':\n{e}")
                     diff_status_var.set("Error during name resolution.")
@@ -465,9 +509,24 @@ def run_config_gui(pipeline_callback=None):
                     manual_target_coord = (c.ra.deg, c.dec.deg)
                     print(f"Resolved target '{star_name}' to RA: {c.ra.deg:.5f}, Dec: {c.dec.deg:.5f}")
                 except NameResolveError as e:
-                    messagebox.showerror("Resolution Error", f"Could not resolve target name '{star_name}' via Simbad.\n\nNote: AAVSO AUIDs (like 000-BJS-555) are often not recognized. Try a common catalog name (e.g., TYC, HD, or variable star name) or use Manual Coordinates.")
-                    diff_status_var.set(f"Error: Could not resolve target '{star_name}'.")
-                    return
+                    # Fallback to local catalog
+                    try:
+                        from photometry.calibration import read_reference_catalog
+                        cat_file = vars_dict["reference_catalog"][0].get()
+                        if os.path.exists(cat_file):
+                            ref_stars = read_reference_catalog(cat_file)
+                            for s in ref_stars:
+                                if str(s.get('id', '')).upper() == star_name.upper():
+                                    manual_target_coord = (s['ra_deg'], s['dec_deg'])
+                                    print(f"Resolved target '{star_name}' to RA: {manual_target_coord[0]:.5f}, Dec: {manual_target_coord[1]:.5f} from local catalog.")
+                                    break
+                    except Exception:
+                        pass
+                        
+                    if manual_target_coord is None:
+                        messagebox.showerror("Resolution Error", f"Could not resolve target name '{star_name}' via Simbad or Local Catalog.\n\nNote: Make sure your AAVSO CSV is loaded in the Analysis tab if you are using AUIDs like 000-BJS-555.")
+                        diff_status_var.set(f"Error: Could not resolve target '{star_name}'.")
+                        return
                 except Exception as e:
                     messagebox.showerror("Resolution Error", f"Error looking up target '{star_name}':\n{e}")
                     diff_status_var.set("Error during target name resolution.")
@@ -779,6 +838,32 @@ def run_config_gui(pipeline_callback=None):
                     tree.item(iid, values=vals)
 
     tree.bind("<ButtonRelease-1>", on_tree_click)
+    
+    def on_double_click(event):
+        item = tree.identify_row(event.y)
+        if not item: return
+        try:
+            from photometry.fits_viewer import FITSViewer
+            ref_cat = vars_dict["reference_catalog"][0].get() if "reference_catalog" in vars_dict else "ATLAS"
+            idx = int(item)
+            file_path = loaded_files[idx]['path']
+            filt = loaded_files[idx]['filter'].upper()
+            b_key = vars_dict["filter_b_keyword"][0].get().upper() if "filter_b_keyword" in vars_dict else "BMAG"
+            
+            if b_key in filt:
+                def_zp = float(vars_dict["default_zp_b"][0].get()) if "default_zp_b" in vars_dict else 23.399
+            else:
+                def_zp = float(vars_dict["default_zp_v"][0].get()) if "default_zp_v" in vars_dict else 23.399
+            
+            if os.path.exists(file_path):
+                viewer_win = tk.Toplevel(root)
+                FITSViewer(viewer_win, file_path, ref_catalog=ref_cat, default_zp=def_zp)
+            else:
+                messagebox.showerror("Error", f"File not found: {file_path}")
+        except Exception as e:
+            print(f"Error opening viewer: {e}")
+
+    tree.bind("<Double-1>", on_double_click)
     
     file_manager_status = tk.StringVar(value="No files loaded.")
     ttk.Label(file_manager_frame, textvariable=file_manager_status, font=("Arial", 8, "italic")).pack(anchor=tk.W, padx=10, pady=2)
@@ -1991,7 +2076,8 @@ def run_config_gui(pipeline_callback=None):
     lf_cal = ttk.LabelFrame(tab_settings, text="Zero Point Calibration")
     lf_cal.pack(fill="x", padx=10, pady=10)
     add_entry(lf_cal, "Match Tolerance (arcsec):", "match_tolerance_arcsec", 8.0, 0)
-    add_entry(lf_cal, "Default Zero Point:", "default_zero_point", 24.0, 1)
+    add_entry(lf_cal, "Default Zero Point (V):", "default_zp_v", 24.0, 1, col_offset=0)
+    add_entry(lf_cal, "Default Zero Point (B):", "default_zp_b", 24.0, 1, col_offset=1)
     add_entry(lf_cal, "Min SNR for Calib:", "calib_snr_threshold", 10.0, 2)
     add_entry(lf_cal, "Catalog Search Radius (arcmin):", "catalog_search_radius", 15.0, 3)
     # Checkboxes moved to Pipeline Configuration section.

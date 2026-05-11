@@ -289,7 +289,7 @@ def fetch_vsx_catalog(ra_deg, dec_deg, radius_arcmin=15, verbose=True):
     from astropy.utils.data import Conf
     Conf.remote_timeout.set(60)
     
-    v = Vizier(catalog="B/vsx/vsx", columns=['OID', 'Name', 'RAJ2000', 'DEJ2000'], row_limit=-1)
+    v = Vizier(catalog="B/vsx/vsx", columns=['OID', 'Name', 'RAJ2000', 'DEJ2000', 'Type'], row_limit=-1)
     coord = SkyCoord(ra=ra_deg, dec=dec_deg, unit=(u.deg, u.deg), frame='icrs')
     
     try:
@@ -310,7 +310,8 @@ def fetch_vsx_catalog(ra_deg, dec_deg, radius_arcmin=15, verbose=True):
             vsx_stars.append({
                 'id': str(row['Name']),
                 'ra_deg': float(row['RAJ2000']),
-                'dec_deg': float(row['DEJ2000'])
+                'dec_deg': float(row['DEJ2000']),
+                'Type': str(row['Type']) if 'Type' in row.colnames and not np.ma.is_masked(row['Type']) else ''
             })
         except:
             continue
@@ -335,7 +336,8 @@ def get_vsx_stars(ra_deg, dec_deg, radius_arcmin=15, cache_dir="photometry_refst
                 vsx_stars.append({
                     'id': row['id'],
                     'ra_deg': float(row['ra_deg']),
-                    'dec_deg': float(row['dec_deg'])
+                    'dec_deg': float(row['dec_deg']),
+                    'Type': row.get('Type', '')
                 })
         return vsx_stars
         
@@ -343,7 +345,7 @@ def get_vsx_stars(ra_deg, dec_deg, radius_arcmin=15, cache_dir="photometry_refst
     
     if vsx_stars:
         with open(cache_file, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=['id', 'ra_deg', 'dec_deg'])
+            writer = csv.DictWriter(f, fieldnames=['id', 'ra_deg', 'dec_deg', 'Type'])
             writer.writeheader()
             for s in vsx_stars:
                 writer.writerow(s)
@@ -379,8 +381,17 @@ def mark_variable_stars(star_list, center_ra, center_dec, radius_arcmin, verbose
         
     idx, d2d, _ = star_coords.match_to_catalog_sky(vsx_coords)
     for i, s in enumerate(star_list):
-        s['is_variable'] = (d2d[i].arcsec < 2.0)
+        is_close = (d2d[i].arcsec < 2.0)
+        matched_vsx = vsx_stars[idx[i]]
+        # AAVSO sometimes includes constant stars in VSX for reference. Don't flag them as variable.
+        var_type = matched_vsx.get('Type', '')
+        if is_close and 'CST' not in str(var_type).upper():
+            s['is_variable'] = True
+            s['var_type'] = var_type
+        else:
+            s['is_variable'] = False
     return star_list
+
 
 def match_and_calibrate(results, ref_catalog_file, filter_name, tolerance_arcsec=2.0, 
                         default_zp=23.399, run_new_calibration=True, output_report=None,
@@ -551,6 +562,8 @@ def match_and_calibrate(results, ref_catalog_file, filter_name, tolerance_arcsec
         else:
             rs['mag_calibrated'] = np.nan
             rs['mag_calibrated_err'] = np.nan
+            
+    return median_zp, std_zp
 
 if __name__ == '__main__':
     # Test the parser

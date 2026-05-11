@@ -59,28 +59,28 @@ Calibra automatically generates a permanent record of every analysis run.
 ## 3. FITS Pre-processing (Calibration)
 Calibra can perform basic instrumental calibration (Bias and Flat-fielding) for raw FITS files directly from the camera.
 
-> [!IMPORTANT]
-> **Plate Solving Required**: Even when using Calibra's pre-processing, your FITS files **must be plate solved** (i.e., contain valid WCS headers like RA and DEC) before running the main analysis. Calibra uses these coordinates to match stars with online catalogs. If your raw files are not plate solved, you can use Calibra's integrated **Plate Solving** tab (via ASTAP) to automatically solve them prior to analysis.
+## 3.1 Plate Solving (via ASTAP)
+To perform photometric analysis, your FITS files must be plate solved (i.e., contain valid WCS headers like RA and DEC). If your raw files are not already plate solved, you can use Calibra's integrated **Plate Solving** tab. This feature utilizes ASTAP—an external command-line engine that must be installed separately, with its executable path provided in the GUI—to automatically add WCS coordinates to your files prior to analysis.
 
-## 3.1 Enabling Calibration
+## 3.2 Enabling Calibration
 In the **"Pre-processing"** tab of the Configuration GUI:
 1.  Check **"Enable Pre-processing (Apply Bias/Flats)"**.
 2.  Select your **Master Bias** file (Default: `C:\Astro\Photometry_Calibra\bias_and_flats\Master_Bias_1x1_gain_0.fits`).
 3.  Select your **Master Flat** files for both V-mag and B-mag.
 
-## 3.2 Automatic Filter Detection
+## 3.3 Automatic Filter Detection
 Calibra automatically reads the `FILTER` keyword from the FITS header of your target image.
 - If the filter contains **"B"**, the B-mag Master Flat is used.
 - Otherwise, the V-mag Master Flat is used by default.
 
-## 3.3 Output of Calibrated Files
+## 3.4 Output of Calibrated Files
 When pre-processing is enabled, Calibra performs the following operation:
 `Calibrated = (Raw - Bias) / (Flat / median(Flat))`
 I.e. it is assumed that the flat is already corrected for bias!
 
 The resulting calibrated images are saved as new FITS files in a `calibrated/` subfolder located within your input FITS directory (e.g., `C:\Astro\Photometry_Calibra\fitsfiles\calibrated\`). These files are then used for the subsequent star detection and photometry steps.
 
-## 3.4 Online Catalog Transformations
+## 3.5 Online Catalog Transformations
 Calibra defaults to **ATLAS-RefCat2** for high-precision zero-point calibration, but also supports **APASS DR9**, **GAIA_DR3**, and the **Landolt Standard Star Catalogue**.
 
 Since **ATLAS-RefCat2** and **GAIA_DR3** do not natively use the Johnson V/B filters, Calibra applies rigorous mathematical transformations to convert their native photometry for zero-point calibration. 
@@ -112,7 +112,7 @@ Based on **GAIA DR3 Documentation,Table 5.9**, which provides coefficients for V
 - $B = G - 0.01448 + 0.6874 \cdot C + 0.3604 \cdot C^2 - 0.06718 \cdot C^3 + 0.006061 \cdot C^4$
 - *where $C = G_{BP} - G_{RP}$*
 
-## 3.5 AAVSO VSX Integration (Variable Star Exclusion)
+## 3.6 AAVSO VSX Integration (Variable Star Exclusion)
 To ensure the highest photometric rigor, Calibra automatically cross-matches all detected stars and reference catalogs against the **AAVSO International Variable Star Index (VSX)** via VizieR (`B/vsx/vsx`).
 
 - **Calibration Rigor**: Any reference star found within 2 arcseconds of a known VSX variable is automatically excluded from the Zero-Point derivation.
@@ -262,6 +262,7 @@ Always visible at the top of the window, this centralized manager allows you to 
 - **Add Files/Directory**: Load your images.
 - **Preview**: View FITS headers directly in the GUI.
 - **Selection**: Check the boxes next to files to select them for Plate Solving, Calibration, or Analysis.
+- **Interactive Viewer**: Double-click any file in the list to open the integrated FITS Viewer. This allows you to zoom, inspect star details (including sub-pixel centroids and FWHM), and view photometric results directly on the image.
 
 ### 7.2 Processing Tabs
 1.  **About**: Version information and a summary of Calibra's capabilities.
@@ -322,6 +323,9 @@ If enabled, the pipeline saves a four-panel graphic for each star showing:
 - **Slow Performance?** Check if `Print Detailed Calibration` is on; for batch processing, turning this off keeps the console clean and fast.
 
 ## References
+
+**ASTAP (plate solving)**
+https://www.hnsky.org/astap.html
 
 **GAIA DR3**
 Gaia Collaboration, Vallenari, A., et al. (2023), "Gaia Data Release 3. Summary of the contents and survey properties"
