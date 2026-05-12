@@ -147,8 +147,20 @@ def fetch_online_catalog(ra_deg, dec_deg, radius_arcmin=15, catalog_name="ATLAS"
                     b_mag = float(row['Bmag']) if 'Bmag' in cols else np.nan
 
                 if not np.isnan(v_mag) and v_mag < 18.0:
+                    # Capture a natural identifier for the star
+                    cat_id = ""
+                    if catalog_name == "GAIA_DR3" and 'Source' in cols:
+                        cat_id = f"Gaia {row['Source']}"
+                    elif catalog_name == "ATLAS" and 'objID' in cols:
+                        cat_id = f"ATLAS {row['objID']}"
+                    elif catalog_name == "LANDOLT" and 'Star' in cols:
+                        cat_id = str(row['Star'])
+                    elif catalog_name == "APASS" and 'recno' in cols:
+                        cat_id = f"APASS {row['recno']}"
+                    
                     ref_stars.append({
                         'id': f"online_{len(ref_stars)}",
+                        'cat_id': cat_id,
                         'ra_deg': ra,
                         'dec_deg': dec,
                         'V_mag': v_mag,
@@ -173,7 +185,7 @@ def get_cached_catalog(ra, dec, radius, catalog_name, cache_dir="photometry_refs
     if not os.path.exists(cache_dir):
         os.makedirs(cache_dir)
         
-    cache_file = os.path.join(cache_dir, f"{catalog_name}_{ra:.3f}_{dec:.3f}_{radius}.csv")
+    cache_file = os.path.join(cache_dir, f"{catalog_name}_{ra:.4f}_{dec:.4f}_{radius}.csv")
     
     if os.path.exists(cache_file):
         if verbose:
@@ -184,6 +196,7 @@ def get_cached_catalog(ra, dec, radius, catalog_name, cache_dir="photometry_refs
             for row in reader:
                 ref_stars.append({
                     'id': row['id'],
+                    'cat_id': row.get('cat_id', ''),
                     'ra_deg': float(row['ra_deg']),
                     'dec_deg': float(row['dec_deg']),
                     'V_mag': float(row['V_mag']),
@@ -197,7 +210,7 @@ def save_to_cache(ref_stars, ra, dec, radius, catalog_name, cache_dir="photometr
         os.makedirs(cache_dir)
     
     cache_file = os.path.join(cache_dir, f"{catalog_name}_{ra:.3f}_{dec:.3f}_{radius}.csv")
-    fieldnames = ['id', 'ra_deg', 'dec_deg', 'V_mag', 'B_mag', 'raw_g', 'raw_r', 'raw_G', 'raw_BP', 'raw_RP']
+    fieldnames = ['id', 'cat_id', 'ra_deg', 'dec_deg', 'V_mag', 'B_mag', 'raw_g', 'raw_r', 'raw_G', 'raw_BP', 'raw_RP']
     with open(cache_file, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -324,22 +337,29 @@ def get_vsx_stars(ra_deg, dec_deg, radius_arcmin=15, cache_dir="photometry_refst
     if not os.path.exists(cache_dir):
         os.makedirs(cache_dir)
         
-    cache_file = os.path.join(cache_dir, f"VSX_{ra_deg:.3f}_{dec_deg:.3f}_{radius_arcmin}.csv")
+    cache_file = os.path.join(cache_dir, f"VSX_{ra_deg:.4f}_{dec_deg:.4f}_{radius_arcmin}.csv")
     
     vsx_stars = []
     if os.path.exists(cache_file):
-        if verbose:
-            print(f"Loading cached VSX catalog from {cache_file}")
-        with open(cache_file, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                vsx_stars.append({
-                    'id': row['id'],
-                    'ra_deg': float(row['ra_deg']),
-                    'dec_deg': float(row['dec_deg']),
-                    'Type': row.get('Type', '')
-                })
-        return vsx_stars
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                # If Type column is missing, invalidate cache to get CST data
+                if 'Type' not in reader.fieldnames:
+                    if verbose: print(f"VSX Cache is old (missing Type). Re-fetching...")
+                else:
+                    if verbose: print(f"Loading cached VSX catalog from {cache_file}")
+                    for row in reader:
+                        vsx_stars.append({
+                            'id': row['id'],
+                            'ra_deg': float(row['ra_deg']),
+                            'dec_deg': float(row['dec_deg']),
+                            'Type': row.get('Type', '')
+                        })
+                    return vsx_stars
+        except Exception as e:
+            if verbose: print(f"Error reading VSX cache: {e}")
+            vsx_stars = []
         
     vsx_stars = fetch_vsx_catalog(ra_deg, dec_deg, radius_arcmin, verbose)
     
@@ -381,11 +401,11 @@ def mark_variable_stars(star_list, center_ra, center_dec, radius_arcmin, verbose
         
     idx, d2d, _ = star_coords.match_to_catalog_sky(vsx_coords)
     for i, s in enumerate(star_list):
-        is_close = (d2d[i].arcsec < 2.0)
+        is_close = (d2d[i].arcsec < 5.0)
         matched_vsx = vsx_stars[idx[i]]
         # AAVSO sometimes includes constant stars in VSX for reference. Don't flag them as variable.
         var_type = matched_vsx.get('Type', '')
-        if is_close and 'CST' not in str(var_type).upper():
+        if is_close and var_type and 'CST' not in str(var_type).upper():
             s['is_variable'] = True
             s['var_type'] = var_type
         else:

@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 import os
+import numpy as np
 import sys
 import threading
 import csv
@@ -1547,7 +1548,15 @@ def run_config_gui(pipeline_callback=None):
         
         use_v = tk.BooleanVar(value=(idx == 0))
         vars_dict[f"ts_ref_{idx}_use"] = (use_v, bool)
-        ttk.Checkbutton(row_f, text="Use", variable=use_v).pack(side=tk.LEFT, padx=2)
+        use_chk = ttk.Checkbutton(row_f, text="Use", variable=use_v)
+        use_chk.pack(side=tk.LEFT, padx=2)
+        
+        def on_use_change(*args):
+            # If Use is checked, make sure it's not the check star
+            if use_v.get() and ts_check_star_idx_var.get() == idx:
+                ts_check_star_idx_var.set(-1)
+                
+        use_v.trace_add("write", on_use_change)
         
         ttk.Radiobutton(row_f, text="Check", variable=ts_check_star_idx_var, value=idx).pack(side=tk.LEFT, padx=2)
         
@@ -1671,6 +1680,14 @@ def run_config_gui(pipeline_callback=None):
         create_ensemble_row(i, lf_ts_ensemble)
         
     ttk.Radiobutton(lf_ts_ensemble, text="No Check Star", variable=ts_check_star_idx_var, value=-1).pack(anchor=tk.W, padx=10)
+
+    def on_check_star_change(*args):
+        # If a check star is selected, uncheck its "Use" box
+        idx = ts_check_star_idx_var.get()
+        if idx >= 0:
+            vars_dict[f"ts_ref_{idx}_use"][0].set(False)
+            
+    ts_check_star_idx_var.trace_add("write", on_check_star_change)
 
     # Light Curve Preview
     lf_ts_plot = ttk.LabelFrame(ts_container, text="Light Curve Preview")
@@ -1928,6 +1945,7 @@ def run_config_gui(pipeline_callback=None):
             results, msg = run_time_series_photometry(
                 files, tar_c.ra.deg, tar_c.dec.deg, 
                 resolved_ensemble,
+                check_star_data,
                 ts_target_bv_var.get(),
                 ts_coeff_var.get(), 0.0, # epsilon not used yet
                 vars_dict["aperture_radius"][0].get(),
@@ -1987,8 +2005,9 @@ def run_config_gui(pipeline_callback=None):
                         ts_tree.insert("", tk.END, values=(
                             f"{r['jd']:.5f}", 
                             f"{r['hjd']:.5f}", 
-                            f"{r['mag']:.4f}", 
-                            f"{r['mag_err']:.4f}", 
+                            f"{r['mag']:.3f}", 
+                            f"{r['mag_err']:.3f}", 
+                            f"{r['check_mag']:.3f}" if isinstance(r.get('check_mag'), (int, float)) and not np.isnan(r.get('check_mag')) else "N/A",
                             f"{r['snr']:.1f}",
                             f"{r.get('fwhm', 0.0):.2f}",
                             r.get('flag', 'OK')
@@ -2013,11 +2032,12 @@ def run_config_gui(pipeline_callback=None):
     lf_ts_table = ttk.LabelFrame(ts_container, text="Numerical Results")
     lf_ts_table.pack(fill="both", expand=True, padx=10, pady=5)
     
-    ts_tree = ttk.Treeview(lf_ts_table, columns=("JD", "HJD", "Mag", "Err", "SNR", "FWHM", "Flag"), show='headings', height=10)
+    ts_tree = ttk.Treeview(lf_ts_table, columns=("JD", "HJD", "Mag", "Err", "Check Mag", "SNR", "FWHM", "Flag"), show='headings', height=10)
     ts_tree.heading("JD", text="JD")
     ts_tree.heading("HJD", text="HJD")
     ts_tree.heading("Mag", text="Mag")
     ts_tree.heading("Err", text="Err")
+    ts_tree.heading("Check Mag", text="Check Mag")
     ts_tree.heading("SNR", text="SNR")
     ts_tree.heading("FWHM", text="FWHM")
     ts_tree.heading("Flag", text="Flag")
@@ -2026,6 +2046,7 @@ def run_config_gui(pipeline_callback=None):
     ts_tree.column("HJD", width=100, anchor=tk.CENTER)
     ts_tree.column("Mag", width=70, anchor=tk.CENTER)
     ts_tree.column("Err", width=70, anchor=tk.CENTER)
+    ts_tree.column("Check Mag", width=80, anchor=tk.CENTER)
     ts_tree.column("SNR", width=60, anchor=tk.CENTER)
     ts_tree.column("FWHM", width=60, anchor=tk.CENTER)
     ts_tree.column("Flag", width=70, anchor=tk.CENTER)

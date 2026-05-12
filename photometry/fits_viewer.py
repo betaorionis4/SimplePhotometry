@@ -257,12 +257,16 @@ class FITSViewer:
                             b_mag = cat_star.get('B_mag')
                             b_str = f"{b_mag:.3f}" if isinstance(b_mag, (int, float)) and not np.isnan(b_mag) else "N/A"
                             details += f"--- Catalog Comparison ---\n"
+                            details += f"ID: {cat_star.get('display_name', 'Star')}\n"
                             details += f"Catalog V: {v_str}\n"
                             details += f"Catalog B: {b_str}\n\n"
                             
                             if cat_star.get('is_variable'):
                                 details += f"!!! VARIABLE STAR !!!\n"
                                 details += f"Type: {cat_star.get('var_type', 'N/A')}\n\n"
+                            
+                            # Overwrite the pipeline's variability flag with the fresh one
+                            nearest_star['is_variable'] = cat_star.get('is_variable', False)
                     except:
                         pass
 
@@ -351,7 +355,8 @@ class FITSViewer:
                 # Try to query the catalog on the fly
                 cat_star = self._query_catalog(ra_deg, dec_deg)
                 if cat_star:
-                    details = f"--- Catalog Match ({self.ref_catalog}) ---\n\n"
+                    details = f"--- Catalog Match ({self.ref_catalog}) ---\n"
+                    details += f"ID: {cat_star.get('display_name', 'Star')}\n\n"
                     details += f"Ref RA:  {coord.ra.to_string(unit='hour', sep=':', precision=2)}\n"
                     details += f"Ref Dec: {coord.dec.to_string(unit='deg', sep=':', precision=2)}\n\n"
                     
@@ -410,24 +415,78 @@ class FITSViewer:
             
         try:
             from photometry.calibration import fetch_online_catalog, get_vsx_stars
-            # Use a small search radius for the specific star (3 arcseconds)
-            radius_arcmin = 3.0 / 60.0
+            # Use a slightly larger search radius for matching (5 arcseconds)
+            radius_arcmin = 5.0 / 60.0
             stars = fetch_online_catalog(ra, dec, radius_arcmin=radius_arcmin, catalog_name=self.ref_catalog, verbose=False)
             if stars:
-                star = stars[0]
-                # Check variability
-                vsx = get_vsx_stars(ra, dec, radius_arcmin=radius_arcmin, verbose=False)
+                # Find the nearest star in the catalog results
+                from astropy.coordinates import SkyCoord
+                import astropy.units as u
+                cat_coords = SkyCoord(ra=[s['ra_deg'] for s in stars]*u.deg, dec=[s['dec_deg'] for s in stars]*u.deg)
+                target_coord = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
+                idx_cat, d2d_cat, _ = target_coord.match_to_catalog_sky(cat_coords)
+                star = stars[idx_cat]
+
+                # Check variability and VSX name (AUID)
+                # Use a larger query radius (1 arcmin) to ensure we capture the star even with slight WCS offsets
+                vsx = get_vsx_stars(ra, dec, radius_arcmin=1.0, verbose=False)
                 if vsx:
-                    var_type = vsx[0].get('Type', '')
-                    star['vsx_name'] = vsx[0].get('id', '')
-                    if 'CST' not in str(var_type).upper():
+                    # Find the nearest VSX star
+                    vsx_coords = SkyCoord(ra=[s['ra_deg'] for s in vsx]*u.deg, dec=[s['dec_deg'] for s in vsx]*u.deg)
+                    idx_v, d2d_v, _ = target_coord.match_to_catalog_sky(vsx_coords)
+                    nearest_vsx = vsx[idx_v]
+                    
+                    var_type = nearest_vsx.get('Type', '')
+                    star['vsx_name'] = nearest_vsx.get('id', '')
+                    star['var_type'] = var_type
+                    
+                    # Only mark as variable if within 5 arcsec and NOT a constant star
+                    dist_v = d2d_v[0].arcsec if hasattr(d2d_v, '__len__') else d2d_v.arcsec
+                    if dist_v < 5.0 and var_type and 'CST' not in str(var_type).upper():
                         star['is_variable'] = True
-                        star['var_type'] = var_type
                     else:
                         star['is_variable'] = False
                 else:
                     star['is_variable'] = False
                     star['vsx_name'] = ''
+                    star['var_type'] = ''
+
+                # Determine best display name: AUID > Catalog ID > Gaia Fallback
+                display_name = star.get('vsx_name', '')
+                if not display_name:
+                    display_name = star.get('cat_id', '')
+                
+                # Debug logging
+                try:
+                    with open("debug_log.txt", "a") as f:
+                        f.write(f"--- Query @ {ra:.5f}, {dec:.5f} ---\n")
+                        dist_c = d2d_cat[0].arcsec if hasattr(d2d_cat, '__len__') else d2d_cat.arcsec
+                        f.write(f"Catalog ({self.ref_catalog}): {star.get('cat_id', 'None')} (dist: {dist_c:.2f}\")\n")
+                        if vsx:
+                            dist_v = d2d_v[0].arcsec if hasattr(d2d_v, '__len__') else d2d_v.arcsec
+                            f.write(f"VSX Match: {nearest_vsx['id']} (dist: {dist_v:.2f}\", type: {var_type})\n")
+                        else:
+                            f.write(f"VSX: No results in 1 arcmin\n")
+                        f.write(f"Final display_name: {display_name}\n\n")
+                except:
+                    pass
+                
+                # Gaia Fallback if still no name and we're not already using Gaia
+                if not display_name and "GAIA" not in self.ref_catalog.upper():
+                    try:
+                        # Use 15 arcsec radius for query to ensure we find it
+                        g_stars = fetch_online_catalog(ra, dec, radius_arcmin=15.0/60.0, catalog_name="GAIA_DR3", verbose=False)
+                        if g_stars:
+                            # Use nearest Gaia star
+                            g_coords = SkyCoord(ra=[s['ra_deg'] for s in g_stars]*u.deg, dec=[s['dec_deg'] for s in g_stars]*u.deg)
+                            idx_g, d2d_g, _ = target_coord.match_to_catalog_sky(g_coords)
+                            dist_g = d2d_g[0].arcsec if hasattr(d2d_g, '__len__') else d2d_g.arcsec
+                            if dist_g < 5.0:
+                                display_name = g_stars[idx_g].get('cat_id', '')
+                    except:
+                        pass
+                
+                star['display_name'] = display_name if display_name else "Star"
                 return star
         except Exception as e:
             print(f"Online query failed: {e}")
@@ -484,6 +543,7 @@ class FITSViewer:
             'inst_mag': inst_mag,
             'cat_mag': cat_mag,
             'id': cat_star.get('id', 'Ref'),
+            'display_name': cat_star.get('display_name', 'Star'),
             'ra_hms': ra_hms,
             'dec_dms': dec_dms,
             'is_variable': cat_star.get('is_variable', False),
@@ -545,13 +605,12 @@ class FITSViewer:
             text += "=" * 23 + "\n\n"
             for i, r in enumerate(self.on_the_spot_refs):
                 var_tag = " [VAR!]" if r['is_variable'] else ""
-                name_tag = f" ({r['vsx_name']})" if r.get('vsx_name') else ""
+                disp_name = r.get('display_name', 'Star')
                 
                 # Use fixed width for alignment
                 text += f"#{i+1:<2} RA:  {r['ra_hms']}{var_tag}\n"
                 text += f"    Dec: {r['dec_dms']}\n"
-                if name_tag:
-                    text += f"    ID:  {r['vsx_name']}\n"
+                text += f"    ID:  {disp_name}\n"
                 text += f"    Mag: {r['cat_mag']:.3f}\n"
                 text += "-" * 23 + "\n"
         self.ref_text.config(state=tk.NORMAL)
