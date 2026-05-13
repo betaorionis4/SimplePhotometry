@@ -4,6 +4,10 @@ import numpy as np
 from astropy.io import fits
 from astropy.coordinates import SkyCoord
 import astropy.units as u
+from astropy.logger import log
+
+# Suppress noisy astropy INFO messages (like WCS SIP distortion warnings)
+log.setLevel('WARNING')
 
 from photometry.star_detection import detect_stars
 from photometry.psf_fitting import refine_coordinates_psf
@@ -115,7 +119,7 @@ def process_file(fits_filename, config):
         return
 
     # 2. PSF Fitting
-    refine_coordinates_psf(
+    median_fwhm = refine_coordinates_psf(
         image_data, results, config['box_size'], config['aperture_radius'], 
         config['saturation_limit'], config['max_plots_to_show_per_file'],
         display_plots=config['display_plots'],
@@ -125,8 +129,20 @@ def process_file(fits_filename, config):
     )
 
     # 3. Aperture Photometry
+    # Determine radii: Fixed or Flexible
+    if config.get('use_flexible_aperture') and median_fwhm:
+        ap_radius = median_fwhm * config.get('aperture_fwhm_factor', 2.0)
+        ann_inner = ap_radius + config.get('annulus_inner_gap', 2.0)
+        ann_outer = ann_inner + config.get('annulus_width', 5.0)
+        print(f"Flexible Aperture Applied -> Radius: {ap_radius:.2f} | Annulus: {ann_inner:.2f}-{ann_outer:.2f}")
+    else:
+        ap_radius = config['aperture_radius']
+        ann_inner = config['annulus_inner']
+        ann_outer = config['annulus_outer']
+        print(f"Fixed Aperture Applied -> Radius: {ap_radius:.2f} | Annulus: {ann_inner:.2f}-{ann_outer:.2f}")
+
     perform_aperture_photometry(
-        image_data, results, config['aperture_radius'], config['annulus_inner'], config['annulus_outer'],
+        image_data, results, ap_radius, ann_inner, ann_outer,
         print_table=config['print_star_detection_table'],
         gain=config['ccd_gain'], read_noise=config['ccd_read_noise'], dark_current=config['ccd_dark_current'], exptime=exptime
     )
@@ -139,13 +155,21 @@ def process_file(fits_filename, config):
 
     # 4. Zero Point Calibration
     filter_name = header.get('FILTER', 'V')
+    b_key = config.get('filter_b_keyword', 'BMAG').upper()
+    if b_key in filter_name.upper():
+        def_zp = config.get('default_zp_b', 24.0)
+    else:
+        def_zp = config.get('default_zp_v', 24.0)
+
     output_report = os.path.join('photometry_output', f'calibration_report_{base_name}.md')
-    match_and_calibrate(results, config['reference_catalog'], filter_name, config['match_tolerance_arcsec'],
-                        default_zp=config['default_zero_point'], run_new_calibration=config['run_new_calibration'],
+    res_zp = match_and_calibrate(results, config['reference_catalog'], filter_name, config['match_tolerance_arcsec'],
+                        default_zp=def_zp, run_new_calibration=config['run_new_calibration'],
                         output_report=output_report, center_ra=center_ra, center_dec=center_dec,
                         snr_threshold=config['calib_snr_threshold'],
                         print_to_console=config['print_detailed_calibration'],
                         header=header, radius_arcmin=config.get('catalog_search_radius', 15.0))
+    
+    calc_zp = res_zp[0] if res_zp else def_zp
 
 
     # Calculate Detection Limits
@@ -215,7 +239,7 @@ def process_file(fits_filename, config):
     print("Done!\n")
     if hasattr(sys.stdout, 'set_log_file'):
         sys.stdout.set_log_file(None)
-    return output_csv, filt
+    return output_csv, filt, calc_zp
 
 def run_pipeline(cfg):
     input_pattern = cfg['input_pattern']

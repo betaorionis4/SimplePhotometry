@@ -190,6 +190,35 @@ def plate_solvem(input_pattern, suffix="wcs", astap_exe="astap", search_radius=5
             
     return solved_files
 
+def plate_solve_files(files, suffix="wcs", astap_exe="astap", search_radius=5.0, annotate=False):
+    """
+    Solves a provided list of FITS file paths.
+    Does not overwrite original files; creates a copy with the given suffix.
+    """
+    if not files:
+        print("No files provided for plate solving.")
+        return []
+
+    solved_files = []
+    for f in files:
+        if suffix and f"_{suffix}" in f:
+            print(f"Skipping potentially already solved file: {f}")
+            continue
+            
+        base, ext = os.path.splitext(f)
+        new_filename = f"{base}_{suffix}{ext}" if suffix else f
+        
+        if new_filename != f:
+            print(f"Copying {f} to {new_filename}...")
+            shutil.copy2(f, new_filename)
+        
+        # Solve the file
+        res = solve_with_astap(new_filename, astap_exe=astap_exe, search_radius=search_radius, annotate=annotate)
+        if res:
+            solved_files.append(new_filename)
+            
+    return solved_files
+
 # --- Example Usage ---
 # Ensure 'astap' is in your system PATH, or provide full path to the .exe
 # my_wcs = solve_with_astap("m42_test.fits", astap_exe="C:/Program Files/astap/astap.exe")
