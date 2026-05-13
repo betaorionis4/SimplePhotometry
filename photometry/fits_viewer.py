@@ -15,7 +15,7 @@ from astropy.coordinates import SkyCoord
 import astropy.units as u
 
 class FITSViewer:
-    def __init__(self, parent, fits_path, ref_catalog="ATLAS", default_zp=23.399):
+    def __init__(self, parent, fits_path, ref_catalog="ATLAS", default_zp=23.399, config=None, initial_stars=None, export_callback=None, aperture_export_callback=None):
         self.parent = parent
         self.fits_path = fits_path
         self.ref_catalog = ref_catalog
@@ -34,8 +34,15 @@ class FITSViewer:
             self.parent.destroy()
             return
 
+        self.config = config or {}
+        self.initial_stars = initial_stars
+        self.export_callback = export_callback
+        self.aperture_export_callback = aperture_export_callback
+
         # On-the-spot photometry data
-        self.on_the_spot_refs = [] # List of {'inst_flux': float, 'cat_mag': float, 'filt': str}
+        self.variable_star = None # {'x', 'y', 'id', 'markers', ...}
+        self.check_star = None
+        self.on_the_spot_refs = [] # List of {'x', 'y', 'id', 'markers', ...}
         self.on_the_spot_zp = None
 
         # Try to load pipeline results
@@ -82,24 +89,63 @@ class FITSViewer:
         self.right_paned = ttk.PanedWindow(self.main_paned, orient=tk.HORIZONTAL)
         self.main_paned.add(self.right_paned, weight=2)
 
-        # 1. Star Details Panel
-        self.details_frame = ttk.LabelFrame(self.right_paned, text="Star Details", padding=10)
-        self.right_paned.add(self.details_frame, weight=1)
-        self.details_frame.config(width=panel_w)
+        # 1. Variable & Inspection Panel
+        self.var_inspection_paned = ttk.PanedWindow(self.right_paned, orient=tk.VERTICAL)
+        self.right_paned.add(self.var_inspection_paned, weight=1)
+        
+        self.details_frame = ttk.LabelFrame(self.var_inspection_paned, text="Live Inspection", padding=5)
+        self.var_inspection_paned.add(self.details_frame, weight=1)
+        
+        # New Profile Plot Frame
+        self.profile_frame = ttk.LabelFrame(self.var_inspection_paned, text="Radial Profile", padding=2)
+        self.var_inspection_paned.add(self.profile_frame, weight=2)
+        
+        self.var_frame = ttk.LabelFrame(self.var_inspection_paned, text="Variable Star", padding=5)
+        self.var_inspection_paned.add(self.var_frame, weight=1)
 
-        # 2. Reference Stars Panel
-        self.ref_frame = ttk.LabelFrame(self.right_paned, text="Reference Stars (Ensemble)", padding=10)
-        self.right_paned.add(self.ref_frame, weight=1)
-        self.ref_frame.config(width=panel_w)
+        # 2. Reference & Check Stars Panel
+        self.ref_paned = ttk.PanedWindow(self.right_paned, orient=tk.VERTICAL)
+        self.right_paned.add(self.ref_paned, weight=1)
 
-        # Details UI Elements
+        self.ref_frame = ttk.LabelFrame(self.ref_paned, text="Ref & Check Stars", padding=10)
+        self.ref_paned.add(self.ref_frame, weight=4)
+
+        self.ap_frame = ttk.LabelFrame(self.ref_paned, text="Aperture Settings", padding=5)
+        self.ref_paned.add(self.ap_frame, weight=1)
+
+        # UI Elements: Consistent width of 25 characters (approx 20 + padding)
         self.details_text = tk.Text(self.details_frame, wrap=tk.WORD, state=tk.DISABLED, 
-                                    bg="#f8f9fa", font=("Courier", 10), width=25)
+                                    bg="#f8f9fa", font=("Courier", 10), width=25, height=12)
         self.details_text.pack(fill=tk.BOTH, expand=True)
 
+        self.var_text = tk.Text(self.var_frame, wrap=tk.WORD, state=tk.DISABLED,
+                                bg="#fff5f5", font=("Courier", 10), width=25, height=12)
+        self.var_text.pack(fill=tk.BOTH, expand=True)
+
         self.ref_text = tk.Text(self.ref_frame, wrap=tk.WORD, state=tk.DISABLED,
-                                bg="#f1f8f1", font=("Courier", 9), width=28)
+                                bg="#f1f8f1", font=("Courier", 9), width=25)
         self.ref_text.pack(fill=tk.BOTH, expand=True)
+
+        # Export Star Button
+        if self.export_callback:
+            self.export_btn = ttk.Button(self.ref_frame, text="Export Stars to LC Tab", command=self._on_export_click)
+            self.export_btn.pack(side=tk.BOTTOM, fill=tk.X, pady=2)
+            
+        # Aperture Controls
+        self.ap_var = tk.DoubleVar(value=self.config.get('aperture_radius', 8.0))
+        self.ann_in_var = tk.DoubleVar(value=self.config.get('annulus_inner', 15.0))
+        self.ann_out_var = tk.DoubleVar(value=self.config.get('annulus_outer', 20.0))
+        
+        def create_ap_field(label, var, row):
+            ttk.Label(self.ap_frame, text=label).grid(row=row, column=0, sticky=tk.W, padx=2)
+            ttk.Entry(self.ap_frame, textvariable=var, width=6).grid(row=row, column=1, sticky=tk.W, padx=2)
+            
+        create_ap_field("Aperture:", self.ap_var, 0)
+        create_ap_field("Annulus In:", self.ann_in_var, 1)
+        create_ap_field("Annulus Out:", self.ann_out_var, 2)
+        
+        self.export_ap_btn = ttk.Button(self.ap_frame, text="Export Aps to Settings", command=self._on_export_ap_click)
+        self.export_ap_btn.grid(row=3, column=0, columnspan=2, pady=5, sticky=tk.EW)
         
         # Setup Figure
         self.fig = Figure(figsize=(8, 8))
@@ -108,8 +154,14 @@ class FITSViewer:
         else:
             self.ax = self.fig.add_subplot(111)
             
-        zscale = ZScaleInterval()
+        zscale = ZScaleInterval(contrast=0.15) # Slightly higher contrast for better star visibility
         vmin, vmax = zscale.get_limits(self.data)
+        
+        # Ensure the background is dark by flooring vmin to the median if needed
+        bg_median = np.nanmedian(self.data)
+        if vmin < bg_median:
+            vmin = bg_median
+            
         self.im = self.ax.imshow(self.data, origin='lower', cmap='Greys_r', vmin=vmin, vmax=vmax)
         self.ax.set_title(os.path.basename(fits_path))
         
@@ -133,6 +185,14 @@ class FITSViewer:
         self.canvas.draw()
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         
+        # Profile Figure
+        self.profile_fig = Figure(figsize=(4, 4))
+        self.profile_ax = self.profile_fig.add_subplot(111)
+        self.profile_fig.subplots_adjust(left=0.15, right=0.95, top=0.9, bottom=0.15)
+        self.profile_canvas = FigureCanvasTkAgg(self.profile_fig, master=self.profile_frame)
+        self.profile_canvas.draw()
+        self.profile_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        
         self.marker = None
         self.ref_markers = []
         
@@ -141,12 +201,18 @@ class FITSViewer:
         self.canvas.mpl_connect('button_press_event', self.on_click)
         self.canvas.mpl_connect('scroll_event', self.on_scroll)
         
+        # Load Initial Stars if provided
+        if self.initial_stars:
+            self.parent.after(500, self._auto_mark_initial_stars)
+        
         # Right-click Context Menu
         self.context_menu = tk.Menu(self.parent, tearoff=0)
-        self.context_menu.add_command(label="Mark as Reference Star", command=self._add_on_the_spot_ref)
-        self.context_menu.add_command(label="Remove as Reference Star", command=self._remove_on_the_spot_ref)
+        self.context_menu.add_command(label="Mark as Variable Star (Red)", command=self._add_variable_star)
+        self.context_menu.add_command(label="Mark as Check Star (Blue)", command=self._add_check_star)
+        self.context_menu.add_command(label="Mark as Reference Star (Green)", command=self._add_on_the_spot_ref)
         self.context_menu.add_separator()
-        self.context_menu.add_command(label="Clear ALL Reference Stars", command=self._clear_on_the_spot_refs)
+        self.context_menu.add_command(label="Remove Marker", command=self._remove_marker_at_click)
+        self.context_menu.add_command(label="Clear ALL Markers", command=self._clear_all_markers)
         
         self._last_click_pos = (0, 0) # Store for right-click context
         
@@ -305,15 +371,13 @@ class FITSViewer:
             self.marker.remove()
             self.marker = None
         
-        # 2. If it's a reference star, we don't draw a red cross
+        # 2. If it's a marked star (any role), we don't draw a red cross
         if is_ref:
             self.canvas.draw_idle()
             return
 
-        # 3. Check if this position is already a reference star
-        # If so, don't draw the red cross on top of the green circle
-        for r in self.on_the_spot_refs:
-            if np.sqrt((r['x'] - x)**2 + (r['y'] - y)**2) < 5.0:
+        for star in ([self.variable_star, self.check_star] + self.on_the_spot_refs):
+            if star and np.sqrt((star['x'] - x)**2 + (star['y'] - y)**2) < 5.0:
                 self.canvas.draw_idle()
                 return
 
@@ -322,91 +386,52 @@ class FITSViewer:
         self.canvas.draw_idle()
 
     def _basic_fit(self, x_click, y_click, suppress_cross=False):
-        size = 21
-        try:
-            cutout = Cutout2D(self.data, (x_click, y_click), (size, size), mode='partial')
-            d_fit = cutout.data
-            bg = np.nanmedian(d_fit)
-            d_fit_sub = d_fit - bg
-            
-            y_init, x_init = np.unravel_index(np.argmax(d_fit_sub), d_fit_sub.shape)
-            g_init = models.Gaussian2D(amplitude=np.max(d_fit_sub), x_mean=x_init, y_mean=y_init, x_stddev=2.0, y_stddev=2.0, theta=0)
-            
-            fitter = fitting.LevMarLSQFitter()
-            yy, xx = np.mgrid[:size, :size]
-            g_fit = fitter(g_init, xx, yy, d_fit_sub)
-            
-            # x_final, y_final are 0-based
-            x_final = cutout.to_original_position((g_fit.x_mean.value, g_fit.y_mean.value))[0]
-            y_final = cutout.to_original_position((g_fit.x_mean.value, g_fit.y_mean.value))[1]
-            fwhm = abs(g_fit.x_stddev.value * 2.355)
-            peak = g_fit.amplitude.value
-            total_flux = peak * 2 * np.pi * g_fit.x_stddev.value ** 2
-            
-            details = f"--- Basic Star Fit ---\n"
-            details += f"(No pipeline data found)\n\n"
-            details += f"X: {x_final + 1:.2f}\n"
-            details += f"Y: {y_final + 1:.2f}\n\n"
-            
-            if self.has_wcs:
-                coord = self.wcs.pixel_to_world(x_final, y_final)
-                ra_deg, dec_deg = coord.ra.deg, coord.dec.deg
-                
-                # Try to query the catalog on the fly
-                cat_star = self._query_catalog(ra_deg, dec_deg)
-                if cat_star:
-                    details = f"--- Catalog Match ({self.ref_catalog}) ---\n"
-                    details += f"ID: {cat_star.get('display_name', 'Star')}\n\n"
-                    details += f"Ref RA:  {coord.ra.to_string(unit='hour', sep=':', precision=2)}\n"
-                    details += f"Ref Dec: {coord.dec.to_string(unit='deg', sep=':', precision=2)}\n\n"
-                    
-                    v_mag = cat_star.get('V_mag')
-                    v_str = f"{v_mag:.3f}" if isinstance(v_mag, (int, float)) and not np.isnan(v_mag) else "N/A"
-                    b_mag = cat_star.get('B_mag')
-                    b_str = f"{b_mag:.3f}" if isinstance(b_mag, (int, float)) and not np.isnan(b_mag) else "N/A"
-                    
-                    details += f"V Mag:   {v_str}\n"
-                    details += f"B Mag:   {b_str}\n\n"
-                    
-                    if cat_star.get('is_variable'):
-                        details += f"!!! VARIABLE STAR !!!\n"
-                        details += f"Type: {cat_star.get('var_type', 'N/A')}\n\n"
+        res = self._fit_at(x_click, y_click)
+        if not res:
+            self._update_details("Fit Failed.")
+            return
 
-                    details += f"--- Fit Details ---\n"
-                else:
-                    details += f"RA:  {coord.ra.to_string(unit='hour', sep=':', precision=2)}\n"
-                    details += f"Dec: {coord.dec.to_string(unit='deg', sep=':', precision=2)}\n\n"
+        # Update Profile Plot
+        self._update_profile_plot(res)
+
+        # Determine ZP if available
+        active_zp = self.default_zp
+        zp_label = f"ZP={self.default_zp:.3f}"
+        if self.on_the_spot_zp is not None:
+            active_zp = self.on_the_spot_zp
+            zp_label = f"Ens ZP={self.on_the_spot_zp:.3f}"
             
-            details += f"X (FITS): {x_final + 1:.2f}\n"
-            details += f"Y (FITS): {y_final + 1:.2f}\n"
-            details += f"FWHM:  {fwhm:.2f} px\n"
-            details += f"Peak:  {peak:.1f} ADU\n"
+        cal_mag = res['inst_mag'] + active_zp
+        
+        details = f"--- Real-time Fit ---\n\n"
+        details += f"X:      {res['x']:.2f}\n"
+        details += f"Y:      {res['y']:.2f}\n\n"
+        
+        if self.has_wcs:
+            coord = self.wcs.pixel_to_world(res['x'], res['y'])
+            details += f"RA:  {coord.ra.to_string(unit='hour', sep=':', precision=1)}\n"
+            details += f"Dec: {coord.dec.to_string(unit='degree', sep=':', precision=1, alwayssign=True)}\n\n"
             
-            if total_flux > 0:
-                inst_mag = -2.5 * np.log10(total_flux)
-                details += f"Inst Mag:  {inst_mag:.3f}*\n"
-                
-                # Zero Point Logic
-                active_zp = self.default_zp
-                zp_label = f"ZP={self.default_zp:.3f}"
-                
-                if self.on_the_spot_zp is not None:
-                    active_zp = self.on_the_spot_zp
-                    zp_label = f"Ens ZP={self.on_the_spot_zp:.3f}"
-                
-                cal_mag = inst_mag + active_zp
-                details += f"Meas Mag:  {cal_mag:.3f}**\n"
-                
-                details += f"\n(* estimated from PSF fit)\n"
-                details += f"(** using {zp_label})\n"
-                if self.on_the_spot_zp is not None:
-                    details += f"(Ensemble of {len(self.on_the_spot_refs)} stars)\n"
-            
-            self._update_details(details)
-            self._draw_marker(x_final, y_final, is_ref=suppress_cross)
-            
-        except Exception as e:
-            self._update_details(f"Fitting failed:\n{e}")
+            # Identify in catalog
+            cat_star = self._query_catalog(coord.ra.deg, coord.dec.deg)
+            if cat_star:
+                v_mag = cat_star.get('V_mag')
+                v_str = f"{v_mag:.3f}" if isinstance(v_mag, (int, float)) and not np.isnan(v_mag) else "N/A"
+                details += f"--- Catalog Comparison ---\n"
+                details += f"ID: {cat_star.get('display_name', 'Star')}\n"
+                details += f"Catalog V: {v_str}\n\n"
+                if cat_star.get('is_variable'):
+                    details += f"!!! VARIABLE STAR !!!\n"
+                    details += f"Type: {cat_star.get('var_type', 'N/A')}\n\n"
+        
+        details += f"FWHM:   {res['fwhm']:.2f} px\n"
+        details += f"Inst M: {res['inst_mag']:.3f}\n"
+        details += f"Cal M:  {cal_mag:.3f}*\n"
+        details += f"(* using {zp_label})\n"
+        
+        self._update_details(details)
+        if not suppress_cross:
+            self._draw_marker(res['x'], res['y'])
 
     def _query_catalog(self, ra, dec):
         # Only query if it looks like an online catalog name
@@ -492,167 +517,350 @@ class FITSViewer:
             print(f"Online query failed: {e}")
         return None
 
+    def _add_variable_star(self):
+        x, y = self._last_click_pos
+        
+        # Clear existing variable markers first (mutual exclusivity)
+        if self.variable_star:
+            for m in self.variable_star['markers']: m.remove()
+            self.variable_star = None
+
+        star_data = self._mark_star(x, y, "Variable", "red")
+        if star_data:
+            self.variable_star = star_data
+            self._update_var_panel()
+            self._update_ref_panel()
+
+    def _add_check_star(self):
+        x, y = self._last_click_pos
+        # If there was a check star, it becomes a ref star
+        old_check = self.check_star
+        
+        star_data = self._mark_star(x, y, "Check", "blue")
+        if star_data:
+            self.check_star = star_data
+            if old_check:
+                # Convert old check to ref (only if it wasn't the star we just clicked)
+                if np.sqrt((old_check['x'] - star_data['x'])**2 + (old_check['y'] - star_data['y'])**2) > 5.0:
+                    old_check['role'] = 'Reference'
+                    for m in old_check['markers']: m.set_color('lime')
+                    self.on_the_spot_refs.append(old_check)
+                else:
+                    # We clicked the existing check star, so old_check's markers were removed in _mark_star
+                    pass
+            
+            self._update_ref_panel()
+            self._update_var_panel()
+
     def _add_on_the_spot_ref(self):
         x, y = self._last_click_pos
-        # 1. Fit the star to get instrumental magnitude
+        star_data = self._mark_star(x, y, "Reference", "lime")
+        if star_data:
+            self.on_the_spot_refs.append(star_data)
+            self._update_ref_panel()
+            self._update_var_panel()
+
+    def _mark_star(self, x, y, role, color):
+        # 1. Fit the star
         res = self._fit_at(x, y)
         if not res:
             messagebox.showwarning("Fit Failed", "Could not fit a star at this position.")
-            return
+            return None
             
-        inst_mag = res['inst_mag']
-        
-        # 2. Get catalog magnitude
+        # 2. Get catalog data
         if not self.has_wcs:
-            messagebox.showwarning("WCS Required", "Cannot perform on-the-spot photometry without WCS.")
-            return
+            messagebox.showwarning("WCS Required", "WCS is needed to identify stars.")
+            return None
             
         coord = self.wcs.pixel_to_world(res['x'], res['y'])
         cat_star = self._query_catalog(coord.ra.deg, coord.dec.deg)
-        
         if not cat_star:
-            messagebox.showwarning("No Catalog Match", "Could not find a matching catalog star for reference.")
-            return
-            
-        # Check if already in list
-        for r in self.on_the_spot_refs:
-            dist = np.sqrt((r['x'] - res['x'])**2 + (r['y'] - res['y'])**2)
-            if dist < 5.0:
-                messagebox.showinfo("Duplicate", "This star is already in your reference ensemble.")
-                return
+            messagebox.showwarning("No Catalog Match", "No matching catalog star found.")
+            return None
 
-        # Determine which magnitude to use
-        filt = self.header.get('FILTER', 'V').upper()
-        if 'B' in filt:
-            cat_mag = cat_star.get('B_mag')
+        # 3. Check for existing role and remove it
+        self._remove_marker_at(res['x'], res['y'], quiet=True)
+
+        # 4. Determine Radii
+        if self.config.get('use_flexible_aperture') and res.get('fwhm'):
+            ap = res['fwhm'] * self.config.get('aperture_fwhm_factor', 2.0)
+            ann_in = ap + self.config.get('annulus_inner_gap', 2.0)
+            ann_out = ann_in + self.config.get('annulus_width', 5.0)
+            # Update local vars for visualization in controls
+            self.ap_var.set(round(ap, 2))
+            self.ann_in_var.set(round(ann_in, 2))
+            self.ann_out_var.set(round(ann_out, 2))
         else:
-            cat_mag = cat_star.get('V_mag')
-            
-        if cat_mag is None or np.isnan(cat_mag):
-            messagebox.showwarning("No Magnitude", f"No {filt} magnitude available in catalog for this star.")
-            return
-            
-        # Get coordinates for display
+            ap = self.ap_var.get()
+            ann_in = self.ann_in_var.get()
+            ann_out = self.ann_out_var.get()
+
+        # 5. Draw Markers
+        m1 = patches.Circle((res['x'], res['y']), radius=ap, color=color, fill=False, lw=1.5)
+        m2 = patches.Circle((res['x'], res['y']), radius=ann_in, color=color, fill=False, lw=0.8, linestyle='--')
+        m3 = patches.Circle((res['x'], res['y']), radius=ann_out, color=color, fill=False, lw=0.8, linestyle='--')
+        self.ax.add_patch(m1)
+        self.ax.add_patch(m2)
+        self.ax.add_patch(m3)
+        
+        # 6. Data
         c_ref = SkyCoord(ra=cat_star['ra_deg']*u.deg, dec=cat_star['dec_deg']*u.deg)
-        ra_hms = c_ref.ra.to_string(unit='hour', sep=':', precision=1, pad=True)
-        dec_dms = c_ref.dec.to_string(unit='deg', sep=':', precision=1, alwayssign=True, pad=True)
-
-        # 3. Add to list
-        if not hasattr(self, 'on_the_spot_refs'): self.on_the_spot_refs = []
-        self.on_the_spot_refs.append({
-            'inst_mag': inst_mag,
-            'cat_mag': cat_mag,
-            'id': cat_star.get('id', 'Ref'),
-            'display_name': cat_star.get('display_name', 'Star'),
-            'ra_hms': ra_hms,
-            'dec_dms': dec_dms,
+        return {
+            'x': res['x'], 'y': res['y'],
+            'role': role,
+            'id': cat_star.get('display_name', 'Star'),
+            'ra_hms': c_ref.ra.to_string(unit='hour', sep=':', precision=1, pad=True),
+            'dec_dms': c_ref.dec.to_string(unit='deg', sep=':', precision=1, alwayssign=True, pad=True),
+            'cat_mag': cat_star.get('V_mag') if 'B' not in self.header.get('FILTER', 'V').upper() else cat_star.get('B_mag'),
+            'inst_mag': res['inst_mag'],
             'is_variable': cat_star.get('is_variable', False),
-            'vsx_name': cat_star.get('vsx_name', ''),
-            'x': res['x'],
-            'y': res['y']
-        })
-        
-        # 4. Recalculate ZP
-        zps = [r['cat_mag'] - r['inst_mag'] for r in self.on_the_spot_refs]
-        self.on_the_spot_zp = np.mean(zps)
-        
-        # 5. Draw persistent green circle
-        circ = patches.Circle((res['x'], res['y']), radius=12, color='lime', fill=False, lw=1.5, alpha=0.8)
-        self.ax.add_patch(circ)
-        self.ref_markers.append(circ)
-        
-        # 6. Update Ref Panel
-        self._update_ref_panel()
-        
-        # 7. Refresh details to show this is now a ref star (pass True to suppress cross)
-        self._basic_fit(x, y, suppress_cross=True)
+            'markers': [m1, m2, m3]
+        }
 
-    def _remove_on_the_spot_ref(self):
+    def _remove_marker_at_click(self):
         x, y = self._last_click_pos
-        # Find nearest ref star
-        idx_to_remove = -1
-        min_dist = 15.0
-        for i, r in enumerate(self.on_the_spot_refs):
-            dist = np.sqrt((r['x'] - x)**2 + (r['y'] - y)**2)
-            if dist < min_dist:
-                min_dist = dist
-                idx_to_remove = i
+        self._remove_marker_at(x, y)
+
+    def _remove_marker_at(self, x, y, quiet=False):
+        removed = False
+        # Check Variable
+        if self.variable_star:
+            dist = np.sqrt((self.variable_star['x'] - x)**2 + (self.variable_star['y'] - y)**2)
+            if dist < 10.0:
+                for m in self.variable_star['markers']: m.remove()
+                self.variable_star = None
+                removed = True
         
-        if idx_to_remove != -1:
-            # Remove from lists
-            self.on_the_spot_refs.pop(idx_to_remove)
-            m = self.ref_markers.pop(idx_to_remove)
-            m.remove()
-            
-            # Recalculate ZP
-            if self.on_the_spot_refs:
-                zps = [r['cat_mag'] - r['inst_mag'] for r in self.on_the_spot_refs]
-                self.on_the_spot_zp = np.mean(zps)
-            else:
-                self.on_the_spot_zp = None
-            
+        # Check Check
+        if not removed and self.check_star:
+            dist = np.sqrt((self.check_star['x'] - x)**2 + (self.check_star['y'] - y)**2)
+            if dist < 10.0:
+                for m in self.check_star['markers']: m.remove()
+                self.check_star = None
+                removed = True
+
+        # Check Refs
+        if not removed:
+            for i, r in enumerate(self.on_the_spot_refs):
+                dist = np.sqrt((r['x'] - x)**2 + (r['y'] - y)**2)
+                if dist < 10.0:
+                    for m in r['markers']: m.remove()
+                    self.on_the_spot_refs.pop(i)
+                    removed = True
+                    break
+        
+        if removed:
+            self._update_var_panel()
             self._update_ref_panel()
-            self._basic_fit(x, y)
+            self.canvas.draw_idle()
+        elif not quiet:
+            messagebox.showinfo("Not Found", "No marked star found near this position.")
+
+    def _update_var_panel(self):
+        text = ""
+        if self.variable_star:
+            s = self.variable_star
+            text += f"ID:  {s['id']}\n"
+            text += f"RA:  {s['ra_hms']}\n"
+            text += f"Dec: {s['dec_dms']}\n"
+            text += f"Mag: {s['cat_mag']:.3f} (Catalog)\n"
+            text += f"Inst:{s['inst_mag']:.3f}\n"
+            text += "=" * 25 + "\n"
         else:
-            messagebox.showinfo("Not Found", "No reference star found near this position to remove.")
+            text = "No variable star marked.\n"
+        
+        self.var_text.config(state=tk.NORMAL)
+        self.var_text.delete(1.0, tk.END)
+        self.var_text.insert(tk.END, text)
+        self.var_text.config(state=tk.DISABLED)
 
     def _update_ref_panel(self):
-        if not self.on_the_spot_refs:
-            text = "No reference stars selected."
-        else:
-            text = f"Ensemble ZP: {self.on_the_spot_zp:.3f}\n"
-            text += f"Stars: {len(self.on_the_spot_refs)}\n"
-            text += "=" * 23 + "\n\n"
+        text = ""
+        # 1. Check Star
+        if self.check_star:
+            s = self.check_star
+            text += f"--- CHECK STAR (Blue) ---\n"
+            text += f"ID:  {s['id']}\n"
+            text += f"RA:  {s['ra_hms']}\n"
+            text += f"Dec: {s['dec_dms']}\n"
+            text += f"Mag: {s['cat_mag']:.3f}\n"
+            text += "-" * 25 + "\n\n"
+        
+        # 2. Reference Ensemble
+        if self.on_the_spot_refs:
+            text += f"--- REFERENCES (Green) ---\n"
+            # Calculate ZP
+            zps = [r['cat_mag'] - r['inst_mag'] for r in self.on_the_spot_refs if r['cat_mag'] is not None]
+            if zps:
+                self.on_the_spot_zp = np.mean(zps)
+                text += f"Ensemble ZP: {self.on_the_spot_zp:.3f}\n"
+            
             for i, r in enumerate(self.on_the_spot_refs):
                 var_tag = " [VAR!]" if r['is_variable'] else ""
-                disp_name = r.get('display_name', 'Star')
-                
-                # Use fixed width for alignment
-                text += f"#{i+1:<2} RA:  {r['ra_hms']}{var_tag}\n"
+                text += f"#{i+1:<2} {r['id']}{var_tag}\n"
+                text += f"    RA:  {r['ra_hms']}\n"
                 text += f"    Dec: {r['dec_dms']}\n"
-                text += f"    ID:  {disp_name}\n"
                 text += f"    Mag: {r['cat_mag']:.3f}\n"
-                text += "-" * 23 + "\n"
+                text += "-" * 25 + "\n"
+        
+        if not self.check_star and not self.on_the_spot_refs:
+            text = "No reference or check stars marked."
+
         self.ref_text.config(state=tk.NORMAL)
         self.ref_text.delete(1.0, tk.END)
         self.ref_text.insert(tk.END, text)
         self.ref_text.config(state=tk.DISABLED)
         self.canvas.draw_idle()
 
-    def _clear_on_the_spot_refs(self):
+    def _clear_all_markers(self):
+        if self.variable_star:
+            for m in self.variable_star['markers']: m.remove()
+            self.variable_star = None
+        if self.check_star:
+            for m in self.check_star['markers']: m.remove()
+            self.check_star = None
+        for r in self.on_the_spot_refs:
+            for m in r['markers']: m.remove()
         self.on_the_spot_refs = []
         self.on_the_spot_zp = None
-        for m in self.ref_markers:
-            m.remove()
-        self.ref_markers = []
         
-        self.ref_text.config(state=tk.NORMAL)
-        self.ref_text.delete(1.0, tk.END)
-        self.ref_text.config(state=tk.DISABLED)
-        
-        messagebox.showinfo("Cleared", "On-the-spot reference stars cleared.")
-        self._update_details("Reference stars cleared. Left-click to inspect stars.")
+        self._update_var_panel()
+        self._update_ref_panel()
         self.canvas.draw_idle()
 
     def _fit_at(self, x, y):
-        size = 21
+        size = 25
         try:
             cutout = Cutout2D(self.data, (x, y), (size, size), mode='partial')
             d_fit = cutout.data
             bg = np.nanmedian(d_fit)
             d_fit_sub = d_fit - bg
+            
             y_init, x_init = np.unravel_index(np.argmax(d_fit_sub), d_fit_sub.shape)
             g_init = models.Gaussian2D(amplitude=np.max(d_fit_sub), x_mean=x_init, y_mean=y_init, x_stddev=2.0, y_stddev=2.0, theta=0)
             fitter = fitting.LevMarLSQFitter()
             yy, xx = np.mgrid[:size, :size]
             g_fit = fitter(g_init, xx, yy, d_fit_sub)
-            x_orig = cutout.to_original_position((g_fit.x_mean.value, g_fit.y_mean.value))[0]
-            y_orig = cutout.to_original_position((g_fit.x_mean.value, g_fit.y_mean.value))[1]
+            
+            x_orig, y_orig = cutout.to_original_position((g_fit.x_mean.value, g_fit.y_mean.value))
+            fwhm = abs(g_fit.x_stddev.value * 2.355)
             total_flux = g_fit.amplitude.value * 2 * np.pi * g_fit.x_stddev.value ** 2
             if total_flux <= 0: return None
-            return {'x': x_orig, 'y': y_orig, 'inst_mag': -2.5 * np.log10(total_flux)}
+            
+            return {
+                'x': x_orig, 'y': y_orig, 'fwhm': fwhm, 
+                'inst_mag': -2.5 * np.log10(total_flux),
+                'data_sub': d_fit_sub,
+                'g_fit': g_fit,
+                'x_grid': xx, 'y_grid': yy,
+                'fit_xc': g_fit.x_mean.value,
+                'fit_yc': g_fit.y_mean.value
+            }
         except:
             return None
+
+    def _update_profile_plot(self, res):
+        self.profile_ax.clear()
+        
+        data = res['data_sub']
+        xx, yy = res['x_grid'], res['y_grid']
+        xc, yc = res['fit_xc'], res['fit_yc']
+        g_fit = res['g_fit']
+        
+        distances = np.sqrt((xx - xc)**2 + (yy - yc)**2)
+        
+        # Limits: extend to inner annulus or 2x aperture
+        ap = self.ap_var.get()
+        ann_in = self.ann_in_var.get()
+        rad_limit = max(ann_in, ap * 1.5, 10)
+        
+        mask = distances <= rad_limit
+        self.profile_ax.scatter(distances[mask], data[mask], color='royalblue', alpha=0.5, s=10)
+        
+        # Fit curve
+        r_fine = np.linspace(0, rad_limit, 100)
+        self.profile_ax.plot(r_fine, g_fit(xc + r_fine, yc), color='darkorange', lw=2)
+        
+        # Aperture line
+        self.profile_ax.axvline(x=ap, color='red', ls='--', lw=1.5, label='Ap')
+        self.profile_ax.axvline(x=ann_in, color='green', ls=':', lw=1, label='Ann')
+        
+        self.profile_ax.set_title(f"FWHM: {res['fwhm']:.2f}px", fontsize=9)
+        self.profile_ax.set_xlim(0, rad_limit)
+        self.profile_ax.grid(True, alpha=0.2)
+        
+        self.profile_canvas.draw_idle()
+
+    def _on_export_ap_click(self):
+        if not self.aperture_export_callback: return
+        data = {
+            'aperture': self.ap_var.get(),
+            'annulus_in': self.ann_in_var.get(),
+            'annulus_out': self.ann_out_var.get()
+        }
+        self.aperture_export_callback(data)
+        messagebox.showinfo("Exported", "Aperture settings updated in main window.")
+
+    def _auto_mark_initial_stars(self):
+        if not self.has_wcs: return
+        
+        # 1. Variable
+        v = self.initial_stars.get('variable')
+        if v and v.get('ra') is not None:
+            self._mark_by_coord(v['ra'], v['dec'], "Variable")
+            
+        # 2. Check
+        c = self.initial_stars.get('check')
+        if c and c.get('ra') is not None:
+            self._mark_by_coord(c['ra'], c['dec'], "Check")
+            
+        # 3. Refs
+        for r in self.initial_stars.get('refs', []):
+            if r.get('ra') is not None:
+                self._mark_by_coord(r['ra'], r['dec'], "Reference")
+        
+        self._update_var_panel()
+        self._update_ref_panel()
+
+    def _mark_by_coord(self, ra, dec, role):
+        try:
+            x, y = self.wcs.world_to_pixel(SkyCoord(ra, dec, unit='deg'))
+            # Check if within bounds
+            if x < 0 or x >= self.data.shape[1] or y < 0 or y >= self.data.shape[0]:
+                return
+            
+            # Use existing role handlers but mock the click position
+            self._last_click_pos = (x, y)
+            if role == "Variable": self._add_variable_star()
+            elif role == "Check": self._add_check_star()
+            elif role == "Reference": self._add_on_the_spot_ref()
+        except Exception as e:
+            print(f"Auto-mark failed for {role} at {ra}, {dec}: {e}")
+
+    def _on_export_click(self):
+        if not self.export_callback: return
+        
+        data = {
+            'variable': None,
+            'check': None,
+            'refs': []
+        }
+        
+        if self.variable_star and self.has_wcs:
+            coord = self.wcs.pixel_to_world(self.variable_star['x'], self.variable_star['y'])
+            data['variable'] = {'ra': coord.ra.deg, 'dec': coord.dec.deg, 'name': self.variable_star['id']}
+            
+        if self.check_star and self.has_wcs:
+            coord = self.wcs.pixel_to_world(self.check_star['x'], self.check_star['y'])
+            data['check'] = {'ra': coord.ra.deg, 'dec': coord.dec.deg, 'name': self.check_star['id']}
+            
+        for r in self.on_the_spot_refs:
+            if self.has_wcs:
+                coord = self.wcs.pixel_to_world(r['x'], r['y'])
+                data['refs'].append({'ra': coord.ra.deg, 'dec': coord.dec.deg, 'name': r['id']})
+            
+        self.export_callback(data)
+        messagebox.showinfo("Exported", "Star selection exported to the Light Curve tab.")
 
     def on_scroll(self, event):
         if event.inaxes != self.ax: return

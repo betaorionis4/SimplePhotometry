@@ -68,7 +68,7 @@ def run_config_gui(pipeline_callback=None):
     pipeline_callback: A function that takes (config) and runs the analysis.
     """
     root = tk.Tk()
-    root.title("Calibra v3.0")
+    root.title("Calibra v3.1")
     root.geometry("1100x750")
     root.minsize(950, 650)
     root.resizable(True, True)
@@ -857,8 +857,118 @@ def run_config_gui(pipeline_callback=None):
                 def_zp = float(vars_dict["default_zp_v"][0].get()) if "default_zp_v" in vars_dict else 23.399
             
             if os.path.exists(file_path):
+                # 1. Gather aperture/annulus configuration
+                viewer_config = {
+                    'aperture_radius': float(vars_dict["aperture_radius"][0].get()),
+                    'annulus_inner': float(vars_dict["annulus_inner"][0].get()),
+                    'annulus_outer': float(vars_dict["annulus_outer"][0].get()),
+                    'use_flexible_aperture': vars_dict["use_flexible_aperture"][0].get(),
+                    'aperture_fwhm_factor': float(vars_dict["aperture_fwhm_factor"][0].get()),
+                    'annulus_inner_gap': float(vars_dict["annulus_inner_gap"][0].get()),
+                    'annulus_width': float(vars_dict["annulus_width"][0].get()),
+                }
+                
+                # 2. Gather INITIAL STARS from Light Curves tab
+                initial_stars = {'variable': None, 'check': None, 'refs': []}
+                
+                # Target
+                t_mode = vars_dict["ts_target_mode"][0].get()
+                t_name = vars_dict["ts_target_name"][0].get().strip()
+                if t_mode == "name" and t_name:
+                    try:
+                        c = SkyCoord.from_name(t_name)
+                        initial_stars['variable'] = {'ra': c.ra.deg, 'dec': c.dec.deg, 'name': t_name}
+                    except: pass
+                elif t_mode == "manual":
+                    try:
+                        c = SkyCoord(vars_dict["ts_target_ra"][0].get(), vars_dict["ts_target_dec"][0].get(), unit=(u.hourangle, u.deg))
+                        initial_stars['variable'] = {'ra': c.ra.deg, 'dec': c.dec.deg, 'name': t_name or "Target"}
+                    except: pass
+                
+                # Refs & Check
+                cs_idx = ts_check_star_idx_var.get()
+                for i in range(5):
+                    name = vars_dict[f"ts_ref_{i}_name"][0].get().strip()
+                    if vars_dict[f"ts_ref_{i}_has_manual"][0].get():
+                        ra = vars_dict[f"ts_ref_{i}_ra"][0].get()
+                        dec = vars_dict[f"ts_ref_{i}_dec"][0].get()
+                        s_data = {'ra': ra, 'dec': dec, 'name': name or f"Star_{i+1}"}
+                        if i == cs_idx: initial_stars['check'] = s_data
+                        elif vars_dict[f"ts_ref_{i}_use"][0].get(): initial_stars['refs'].append(s_data)
+                    elif name:
+                        try:
+                            c = SkyCoord.from_name(name)
+                            s_data = {'ra': c.ra.deg, 'dec': c.dec.deg, 'name': name}
+                            if i == cs_idx: initial_stars['check'] = s_data
+                            elif vars_dict[f"ts_ref_{i}_use"][0].get(): initial_stars['refs'].append(s_data)
+                        except: pass
+
+                # 3. Define EXPORT Callbacks
+                def update_light_curve_stars(data):
+                    # ... (existing logic)
+                    if data['variable']:
+                        v = data['variable']
+                        vars_dict["ts_target_mode"][0].set("manual")
+                        vars_dict["ts_target_name"][0].set(v['name'])
+                        c = SkyCoord(v['ra'], v['dec'], unit=u.deg)
+                        vars_dict["ts_target_ra"][0].set(c.ra.to_string(unit='hour', sep=':', precision=2))
+                        vars_dict["ts_target_dec"][0].set(c.dec.to_string(unit='degree', sep=':', precision=2, alwayssign=True))
+                    
+                    # Check & Refs
+                    slots_filled = 0
+                    if data['check']:
+                        c = data['check']
+                        vars_dict["ts_ref_0_name"][0].set(c['name'])
+                        vars_dict["ts_ref_0_ra"][0].set(c['ra'])
+                        vars_dict["ts_ref_0_dec"][0].set(c['dec'])
+                        vars_dict["ts_ref_0_has_manual"][0].set(True)
+                        vars_dict["ts_ref_0_use"][0].set(False)
+                        ts_check_star_idx_var.set(0)
+                        slots_filled = 1
+                    else:
+                        ts_check_star_idx_var.set(-1)
+                    
+                    current_idx = slots_filled
+                    for r in data['refs']:
+                        if current_idx >= 5: break
+                        vars_dict[f"ts_ref_{current_idx}_name"][0].set(r['name'])
+                        vars_dict[f"ts_ref_{current_idx}_ra"][0].set(r['ra'])
+                        vars_dict[f"ts_ref_{current_idx}_dec"][0].set(r['dec'])
+                        vars_dict[f"ts_ref_{current_idx}_has_manual"][0].set(True)
+                        vars_dict[f"ts_ref_{current_idx}_use"][0].set(True)
+                        current_idx += 1
+                    
+                    for idx in range(current_idx, 5):
+                        vars_dict[f"ts_ref_{idx}_name"][0].set("")
+                        vars_dict[f"ts_ref_{idx}_has_manual"][0].set(False)
+                        vars_dict[f"ts_ref_{idx}_use"][0].set(False)
+                        if f"ts_ref_{idx}_coord_label" in vars_dict:
+                            vars_dict[f"ts_ref_{idx}_coord_label"][0].set("")
+                    
+                    # TRIGGER AUTO-FETCH
+                    ts_status_var.set("Fetching catalog data for exported stars...")
+                    root.update_idletasks()
+                    if data['variable'] and 'ts_target_fetch_func' in vars_dict:
+                        root.after(100, vars_dict['ts_target_fetch_func'])
+                    
+                    def trigger_refs():
+                        if 'ts_ref_fetch_funcs' in vars_dict:
+                            for i in range(current_idx):
+                                if i in vars_dict['ts_ref_fetch_funcs']:
+                                    root.after(i*200, vars_dict['ts_ref_fetch_funcs'][i])
+                    root.after(500, trigger_refs)
+
+                def update_apertures(ap_data):
+                    vars_dict["aperture_radius"][0].set(ap_data['aperture'])
+                    vars_dict["annulus_inner"][0].set(ap_data['annulus_in'])
+                    vars_dict["annulus_outer"][0].set(ap_data['annulus_out'])
+                    ts_status_var.set("Aperture settings updated from FITS Viewer.")
+
                 viewer_win = tk.Toplevel(root)
-                FITSViewer(viewer_win, file_path, ref_catalog=ref_cat, default_zp=def_zp)
+                FITSViewer(viewer_win, file_path, ref_catalog=ref_cat, default_zp=def_zp, 
+                           config=viewer_config, initial_stars=initial_stars, 
+                           export_callback=update_light_curve_stars,
+                           aperture_export_callback=update_apertures)
             else:
                 messagebox.showerror("Error", f"File not found: {file_path}")
         except Exception as e:
@@ -1561,10 +1671,12 @@ def run_config_gui(pipeline_callback=None):
         ttk.Radiobutton(row_f, text="Check", variable=ts_check_star_idx_var, value=idx).pack(side=tk.LEFT, padx=2)
         
         coord_v = tk.StringVar(value="")
+        vars_dict[f"ts_ref_{idx}_coord_label"] = (coord_v, str)
         ttk.Label(row_f, textvariable=coord_v, font=("Arial", 8, "italic"), foreground="blue").pack(side=tk.LEFT, padx=5)
         
         def on_fetch():
             name = name_v.get().strip()
+            # ... (rest of on_fetch)
             
             # Use manual coords if available, else try name resolution
             if has_manual.get():
@@ -1627,9 +1739,16 @@ def run_config_gui(pipeline_callback=None):
                 
                 if not name_v.get(): name_v.set(star.get('id', 'RefStar'))
                 
-                ts_status_var.set(f"Updated from {cat_name} (Dist: {d2d.arcsec:.1f}\")")
+                # Fix: ensure d2d.arcsec is treated as float for formatting
+                dist_val = float(d2d.arcsec) if hasattr(d2d.arcsec, '__len__') else d2d.arcsec
+                ts_status_var.set(f"Updated from {cat_name} (Dist: {float(dist_val):.1f}\")")
             except Exception as e:
                 ts_status_var.set(f"Fetch failed: {e}")
+                print(f"Fetch error details: {e}")
+
+        # Store the fetch function so it can be called programmatically
+        if 'ts_ref_fetch_funcs' not in vars_dict: vars_dict['ts_ref_fetch_funcs'] = {}
+        vars_dict['ts_ref_fetch_funcs'][idx] = on_fetch
 
         ttk.Button(row_f, text="Fetch", command=on_fetch, width=6).pack(side=tk.LEFT, padx=2)
         
@@ -1753,6 +1872,7 @@ def run_config_gui(pipeline_callback=None):
             ts_status_var.set(f"Target resolution failed: {e}")
 
     ttk.Button(lf_ts_target, text="Fetch", command=on_fetch_target_ts, width=6).grid(row=0, column=2, sticky=tk.W, padx=2)
+    vars_dict['ts_target_fetch_func'] = on_fetch_target_ts
     
     ttk.Radiobutton(lf_ts_target, text="Manual RA/Dec", variable=ts_target_mode_var, value="manual").grid(row=1, column=0, sticky=tk.W, padx=10, pady=5)
     ts_target_ra_var = tk.StringVar(value="14:34:00")
@@ -1992,8 +2112,10 @@ def run_config_gui(pipeline_callback=None):
                 
                 # Update embedded plot
                 plot_title = f"{ts_target_name_var.get()} ({ts_filter_var.get()} Filter)"
-                plot_light_curve(results, plot_title, out_plot, ax=ts_ax)
-                root.after(0, ts_canvas.draw)
+                def update_viz():
+                    plot_light_curve(results, plot_title, out_plot, ax=ts_ax)
+                    ts_canvas.draw()
+                root.after(0, update_viz)
                 
                 # Update table
                 def update_table():
@@ -2150,7 +2272,7 @@ def run_config_gui(pipeline_callback=None):
     
     info_frame = tk.Frame(about_container, bg="white")
     info_frame.pack(fill="x", pady=10)
-    tk.Label(info_frame, text="Version: 3.0 \tLatest Update: 2026-05-10", font=("Arial", 10), anchor="w", bg="white").pack(fill="x")
+    tk.Label(info_frame, text="Version: 3.1 \tLatest Update: 2026-05-13", font=("Arial", 10), anchor="w", bg="white").pack(fill="x")
     
     tk.Label(about_container, text="Description:", font=("Arial", 11, "bold"), anchor="w", bg="white", fg=primary_blue).pack(fill="x", pady=(10, 5))
     desc_text = (

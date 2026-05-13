@@ -15,6 +15,7 @@ import json
 # Now persisted to disk to survive restarts
 _SESSION_PHOT_CACHE = {} # (fpath, ra, dec, ap, ann_in, ann_out) -> measure_star dict
 _SESSION_FWHM_CACHE = {} # (fpath, aperture_radius) -> median_fwhm
+_SESSION_HEADER_CACHE = {} # fpath -> {jd, airmass, lat, lon}
 
 CACHE_FILE = os.path.join("photometry_output", "time_series_cache.json")
 
@@ -36,6 +37,9 @@ def load_session_cache():
                 if len(parts) == 2:
                     key = (parts[0], float(parts[1]))
                     _SESSION_FWHM_CACHE[key] = v
+            for k, v in data.get('header', {}).items():
+                _SESSION_HEADER_CACHE[k] = v
+            print(f"Photometry cache loaded: {len(_SESSION_PHOT_CACHE)} measurements, {len(_SESSION_FWHM_CACHE)} FWHM entries.")
     except Exception as e:
         print(f"Warning: Could not load photometry cache: {e}")
 
@@ -45,7 +49,7 @@ def save_session_cache():
         phot_export = {"|".join(map(str, k)): v for k, v in _SESSION_PHOT_CACHE.items()}
         fwhm_export = {"|".join(map(str, k)): v for k, v in _SESSION_FWHM_CACHE.items()}
         with open(CACHE_FILE, 'w') as f:
-            json.dump({'phot': phot_export, 'fwhm': fwhm_export}, f)
+            json.dump({'phot': phot_export, 'fwhm': fwhm_export, 'header': _SESSION_HEADER_CACHE}, f)
     except Exception as e:
         print(f"Warning: Could not save photometry cache: {e}")
 
@@ -179,176 +183,168 @@ def run_time_series_photometry(fits_files, target_ra, target_dec,
             update_progress((i / len(fits_files)) * 100)
             
         try:
-            with fits.open(fpath) as hdul:
-                header = hdul[0].header
-                data = hdul[0].data
-                if data is None and len(hdul) > 1:
-                    data = hdul[1].data
-                    header = hdul[1].header
-                
-                if data is None:
-                    continue
-
-                if data.ndim == 3:
-                    data = data[0]
-
-                wcs = WCS(header)
-                
-                # Use header site info if available, else use manual site info
-                lat = header.get('SITELAT', site_lat)
-                lon = header.get('SITELONG', site_long)
-                
-                # 1. Timing and Airmass
-                jd = header.get('JD')
-                if not jd:
-                    mjd = header.get('MJD')
-                    if mjd is not None:
-                        jd = mjd + 2400000.5
-                
-                if not jd:
-                    t_obs = header.get('DATE-OBS')
-                    if t_obs:
-                        try:
-                            from astropy.time import Time
-                            jd = Time(t_obs).jd
-                        except:
-                            jd = 0
-                
-                hjd = get_hjd(None, target_ra, target_dec, header, lat, lon) or jd
-                airmass = header.get('AIRMASS', 1.0)
-                
-                # 2. Determine Radii: Fixed or Flexible
-                curr_ap = aperture_radius
-                curr_ann_in = annulus_inner
-                curr_ann_out = annulus_outer
-                median_fwhm = None
-
-                # To get FWHM, we run PSF fitting on the stars we care about
-                fwhm_cache_key = (fpath, aperture_radius)
-                is_fwhm_cached = False
-                if fwhm_cache_key in _SESSION_FWHM_CACHE:
-                    median_fwhm = _SESSION_FWHM_CACHE[fwhm_cache_key]
-                    is_fwhm_cached = True
+            # --- FAST PATH: Check if we can skip FITS open entirely ---
+            header_info = _SESSION_HEADER_CACHE.get(fpath)
+            fwhm_cache_key = (fpath, aperture_radius)
+            cached_fwhm = _SESSION_FWHM_CACHE.get(fwhm_cache_key)
+            
+            can_skip = False
+            if header_info and cached_fwhm is not None:
+                if use_flexible_aperture:
+                    f_ap = cached_fwhm * aperture_fwhm_factor
+                    f_ann_in = f_ap + annulus_inner_gap
+                    f_ann_out = f_ann_in + annulus_width
                 else:
-                    try:
-                        stars_to_fit = []
-                        # Target
-                        tx, ty = wcs.world_to_pixel(SkyCoord(ra=target_ra*u.deg, dec=target_dec*u.deg, frame='icrs'))
-                        stars_to_fit.append({'id': 'Target', 'x': tx + 1.0, 'y': ty + 1.0})
-                        # Ensemble
-                        for idx, s in enumerate(ensemble_stars):
-                            sx, sy = wcs.world_to_pixel(SkyCoord(ra=s['ra']*u.deg, dec=s['dec']*u.deg, frame='icrs'))
-                            stars_to_fit.append({'id': f"Ref_{idx}", 'x': sx + 1.0, 'y': sy + 1.0})
-                        
-                        # Run PSF fitting
-                        median_fwhm = refine_coordinates_psf(
-                            data, stars_to_fit, 15, aperture_radius, 
-                            60000, 0, display_plots=False, print_psf_fitting=print_psf_fitting
-                        )
-                        _SESSION_FWHM_CACHE[fwhm_cache_key] = median_fwhm
-                    except Exception as e:
-                        if print_psf_fitting: print(f"  [{os.path.basename(fpath)}] PSF Fitting failed: {e}")
-                        median_fwhm = None
+                    f_ap, f_ann_in, f_ann_out = aperture_radius, annulus_inner, annulus_outer
+                
+                def is_cached(ra, dec):
+                    k = (fpath, round(ra, 6), round(dec, 6), round(f_ap, 2), round(f_ann_in, 2), round(f_ann_out, 2))
+                    return k in _SESSION_PHOT_CACHE
+                
+                if is_cached(target_ra, target_dec) and all(is_cached(s['ra'], s['dec']) for s in ensemble_stars):
+                    if not check_star or is_cached(check_star['ra'], check_star['dec']):
+                        can_skip = True
 
-                if use_flexible_aperture and median_fwhm:
-                    curr_ap = median_fwhm * aperture_fwhm_factor
-                    curr_ann_in = curr_ap + annulus_inner_gap
-                    curr_ann_out = curr_ann_in + annulus_width
-                    cache_label = " [Cached]" if is_fwhm_cached else ""
-                    if print_psf_fitting:
-                        print(f"  [{os.path.basename(fpath)}] Median FWHM: {median_fwhm:.2f}px -> Ap: {curr_ap:.2f}px{cache_label}")
-                    elif (i+1) % 10 == 0 or i == 0:
-                        print(f"  [{os.path.basename(fpath)}] Applied Flexible Ap: {curr_ap:.2f}px (FWHM: {median_fwhm:.2f}px){cache_label}")
-                elif (i+1) % 10 == 0 or i == 0:
-                    cache_label = " [Cached]" if is_fwhm_cached else ""
-                    if median_fwhm:
-                        print(f"  [{os.path.basename(fpath)}] Using Fixed Ap: {curr_ap:.2f}px (FWHM: {median_fwhm:.2f}px){cache_label}")
+            if can_skip:
+                jd = header_info['jd']
+                airmass = header_info['airmass']
+                hjd = get_hjd(None, target_ra, target_dec, header_info, header_info['lat'], header_info['lon']) or jd
+                median_fwhm = cached_fwhm
+                curr_ap, curr_ann_in, curr_ann_out = f_ap, f_ann_in, f_ann_out
+                data, wcs = None, None
+                is_fwhm_cached = True
+            else:
+                with fits.open(fpath) as hdul:
+                    header = hdul[0].header
+                    data = hdul[0].data
+                    if data is None and len(hdul) > 1:
+                        data = hdul[1].data
+                        header = hdul[1].header
+                    if data is None: continue
+                    if data.ndim == 3: data = data[0]
+
+                    wcs = WCS(header)
+                    lat = header.get('SITELAT', site_lat)
+                    lon = header.get('SITELONG', site_long)
+                    
+                    jd = header.get('JD') or (header.get('MJD') + 2400000.5 if header.get('MJD') else None)
+                    if not jd:
+                        t_obs = header.get('DATE-OBS')
+                        if t_obs:
+                            try: from astropy.time import Time; jd = Time(t_obs).jd
+                            except: jd = 0
+                    
+                    airmass = header.get('AIRMASS', 1.0)
+                    hjd = get_hjd(None, target_ra, target_dec, header, lat, lon) or jd
+                    
+                    _SESSION_HEADER_CACHE[fpath] = {
+                        'jd': jd, 'airmass': airmass, 'lat': lat, 'lon': lon,
+                        'JD': header.get('JD'), 'DATE-OBS': header.get('DATE-OBS'),
+                        'SITELONG': header.get('SITELONG'), 'SITELAT': header.get('SITELAT'), 'SITEELEV': header.get('SITEELEV')
+                    }
+                    
+                    median_fwhm = None
+                    is_fwhm_cached = False
+                    if fwhm_cache_key in _SESSION_FWHM_CACHE:
+                        median_fwhm = _SESSION_FWHM_CACHE[fwhm_cache_key]
+                        is_fwhm_cached = True
                     else:
-                        print(f"  [{os.path.basename(fpath)}] Using Fixed Ap: {curr_ap:.2f}px")
+                        try:
+                            stars_to_fit = []
+                            tx, ty = wcs.world_to_pixel(SkyCoord(ra=target_ra*u.deg, dec=target_dec*u.deg, frame='icrs'))
+                            stars_to_fit.append({'id': 'Target', 'x': tx + 1.0, 'y': ty + 1.0})
+                            for idx, s in enumerate(ensemble_stars):
+                                sx, sy = wcs.world_to_pixel(SkyCoord(ra=s['ra']*u.deg, dec=s['dec']*u.deg, frame='icrs'))
+                                stars_to_fit.append({'id': f"Ref_{idx}", 'x': sx + 1.0, 'y': sy + 1.0})
+                            median_fwhm = refine_coordinates_psf(data, stars_to_fit, 15, aperture_radius, 60000, 0, display_plots=False, print_psf_fitting=print_psf_fitting)
+                            _SESSION_FWHM_CACHE[fwhm_cache_key] = median_fwhm
+                        except: median_fwhm = None
 
-                # 3. Measure Target and Ensemble
-                def get_cached_measurement(fpath, ra, dec, ap, ann_in, ann_out, data, wcs, gain):
-                    nonlocal cache_hits
-                    # Round coords and ap to ensure hits despite float precision jitter
-                    key = (fpath, round(ra, 6), round(dec, 6), round(ap, 2), round(ann_in, 2), round(ann_out, 2))
-                    if key in _SESSION_PHOT_CACHE:
-                        cache_hits += 1
-                        return _SESSION_PHOT_CACHE[key]
-                    res = measure_star(data, wcs, ra, dec, ap, ann_in, ann_out, gain)
-                    _SESSION_PHOT_CACHE[key] = res
-                    return res
+                    if use_flexible_aperture and median_fwhm:
+                        curr_ap = median_fwhm * aperture_fwhm_factor
+                        curr_ann_in = curr_ap + annulus_inner_gap
+                        curr_ann_out = curr_ann_in + annulus_width
+                    else:
+                        curr_ap, curr_ann_in, curr_ann_out = aperture_radius, annulus_inner, annulus_outer
 
-                target_res = get_cached_measurement(fpath, target_ra, target_dec, curr_ap, curr_ann_in, curr_ann_out, data, wcs, gain)
-                
-                ensemble_res = []
-                for s in ensemble_stars:
-                    res = get_cached_measurement(fpath, s['ra'], s['dec'], curr_ap, curr_ann_in, curr_ann_out, data, wcs, gain)
-                    if res and not np.isnan(res['mag_inst']):
-                        # Calculate individual Zero Point for this ref star
-                        # ZV_i = mag_std_i - (mag_inst_corr_i + Tv_bv * bv_std_i)
-                        m_inst_corr = res['mag_inst'] - (k_coeff * airmass)
-                        zv_i = s['mag_std'] - (m_inst_corr + coeff_term * s['bv_std'])
-                        ensemble_res.append({
-                            'name': s['name'],
-                            'zv': zv_i,
-                            'snr': res['snr'],
-                            'mag_err': res['mag_err']
-                        })
-                
-                if target_res and ensemble_res:
-                    if np.isnan(target_res['mag_inst']):
-                        print(f"  - {os.path.basename(fpath)}: Target measurement returned NaN")
-                        continue
-                        
-                    # 4. Ensemble Calibration Logic
-                    # We average the zero points from all valid ensemble stars
-                    zvs = [r['zv'] for r in ensemble_res]
-                    zv_avg = np.mean(zvs)
-                    zv_std = np.std(zvs, ddof=1) if len(zvs) > 1 else 0.0
-                    zv_err = zv_std / np.sqrt(len(zvs)) if len(zvs) > 1 else 0.01 # Fallback 0.01 if only 1 star
-                    
-                    # Target Calibration
-                    # V_target_std = v_target_corr + Tv_bv * (B-V)_target + ZV_avg
-                    v_target_corr = target_res['mag_inst'] - (k_coeff * airmass)
-                    v_target_std = v_target_corr + coeff_term * target_bv + zv_avg
-                    
-                    # Total uncertainty = sqrt(photon_noise^2 + ensemble_zp_error^2)
-                    total_mag_err = np.sqrt(target_res['mag_err']**2 + zv_err**2)
+            def get_cached_measurement(fpath, ra, dec, ap, ann_in, ann_out, data, wcs, gain):
+                nonlocal cache_hits
+                key = (fpath, round(ra, 6), round(dec, 6), round(ap, 2), round(ann_in, 2), round(ann_out, 2))
+                if key in _SESSION_PHOT_CACHE:
+                    cache_hits += 1
+                    return _SESSION_PHOT_CACHE[key]
+                if data is None: return None
+                res = measure_star(data, wcs, ra, dec, ap, ann_in, ann_out, gain)
+                _SESSION_PHOT_CACHE[key] = res
+                return res
 
-                    if i < 3:
-                        print(f"\n--- Diagnostic (Image {i+1}: {os.path.basename(fpath)}) ---")
-                        print(f"  Target Inst: {target_res['mag_inst']:.4f} | Corr: {v_target_corr:.4f}")
-                        print(f"  Ensemble ({len(ensemble_res)} stars): ZP_avg = {zv_avg:.4f} +/- {zv_err:.4f} (std={zv_std:.4f})")
-                        for r in ensemble_res:
-                            print(f"    * {r['name']}: ZP={r['zv']:.4f}, SNR={r['snr']:.1f}")
-                        print(f"  FINAL MAG:   {v_target_std:.4f} +/- {total_mag_err:.4f}")
-                        print("------------------------------------------------------\n")
-                    
-                    # 5. Check Star Calibration
-                    check_mag_std = np.nan
-                    if check_star:
-                        check_res = get_cached_measurement(fpath, check_star['ra'], check_star['dec'], curr_ap, curr_ann_in, curr_ann_out, data, wcs, gain)
-                        if check_res and not np.isnan(check_res['mag_inst']):
-                            c_inst_corr = check_res['mag_inst'] - (k_coeff * airmass)
-                            check_mag_std = c_inst_corr + coeff_term * check_star['bv_std'] + zv_avg
-
-                    results.append({
-                        'file': os.path.basename(fpath),
-                        'jd': jd,
-                        'hjd': hjd,
-                        'airmass': airmass,
-                        'mag': v_target_std,
-                        'mag_err': total_mag_err,
-                        'check_mag': check_mag_std,
-                        'snr': target_res['snr'],
-                        'fwhm': median_fwhm if median_fwhm else np.nan,
-                        'zp_avg': zv_avg,
-                        'zp_err': zv_err,
-                        'n_ensemble': len(ensemble_res)
+            target_res = get_cached_measurement(fpath, target_ra, target_dec, curr_ap, curr_ann_in, curr_ann_out, data, wcs, gain)
+            ensemble_res = []
+            for s in ensemble_stars:
+                res = get_cached_measurement(fpath, s['ra'], s['dec'], curr_ap, curr_ann_in, curr_ann_out, data, wcs, gain)
+                if res and not np.isnan(res['mag_inst']):
+                    m_inst_corr = res['mag_inst'] - (k_coeff * airmass)
+                    zv_i = s['mag_std'] - (m_inst_corr + coeff_term * s['bv_std'])
+                    ensemble_res.append({
+                        'name': s['name'],
+                        'zv': zv_i,
+                        'snr': res['snr'],
+                        'mag_err': res['mag_err']
                     })
-                else:
-                    if not target_res: print(f"  - {os.path.basename(fpath)}: Target star could not be centroided.")
-                    if not ensemble_res: print(f"  - {os.path.basename(fpath)}: No ensemble stars could be measured.")
+            
+            if target_res and ensemble_res:
+                if np.isnan(target_res['mag_inst']):
+                    print(f"  - {os.path.basename(fpath)}: Target measurement returned NaN")
+                    continue
+                    
+                # 4. Ensemble Calibration Logic
+                # We average the zero points from all valid ensemble stars
+                zvs = [r['zv'] for r in ensemble_res]
+                zv_avg = np.mean(zvs)
+                zv_std = np.std(zvs, ddof=1) if len(zvs) > 1 else 0.0
+                zv_err = zv_std / np.sqrt(len(zvs)) if len(zvs) > 1 else 0.01 # Fallback 0.01 if only 1 star
+                
+                # Target Calibration
+                v_target_corr = target_res['mag_inst'] - (k_coeff * airmass)
+                v_target_std = v_target_corr + coeff_term * target_bv + zv_avg
+                
+                # Total uncertainty
+                total_mag_err = np.sqrt(target_res['mag_err']**2 + zv_err**2)
+
+                if i < 3:
+                    print(f"\n--- Diagnostic (Image {i+1}: {os.path.basename(fpath)}) ---")
+                    print(f"  Target Inst: {target_res['mag_inst']:.4f} | Corr: {v_target_corr:.4f}")
+                    print(f"  Ensemble ({len(ensemble_res)} stars): ZP_avg = {zv_avg:.4f} +/- {zv_err:.4f} (std={zv_std:.4f})")
+                    for r in ensemble_res:
+                        print(f"    * {r['name']}: ZP={r['zv']:.4f}, SNR={r['snr']:.1f}")
+                    print(f"  FINAL MAG:   {v_target_std:.4f} +/- {total_mag_err:.4f}")
+                    print("------------------------------------------------------\n")
+                
+                # 5. Check Star Calibration
+                check_mag_std = np.nan
+                if check_star:
+                    check_res = get_cached_measurement(fpath, check_star['ra'], check_star['dec'], curr_ap, curr_ann_in, curr_ann_out, data, wcs, gain)
+                    if check_res and not np.isnan(check_res['mag_inst']):
+                        c_inst_corr = check_res['mag_inst'] - (k_coeff * airmass)
+                        check_mag_std = c_inst_corr + coeff_term * check_star['bv_std'] + zv_avg
+
+                results.append({
+                    'file': os.path.basename(fpath),
+                    'jd': jd,
+                    'hjd': hjd,
+                    'airmass': airmass,
+                    'mag': v_target_std,
+                    'mag_err': total_mag_err,
+                    'check_mag': check_mag_std,
+                    'snr': target_res['snr'],
+                    'fwhm': median_fwhm if median_fwhm else np.nan,
+                    'zp_avg': zv_avg,
+                    'zp_err': zv_err,
+                    'n_ensemble': len(ensemble_res)
+                })
+            else:
+                if not target_res: print(f"  - {os.path.basename(fpath)}: Target star could not be centroided.")
+                if not ensemble_res: print(f"  - {os.path.basename(fpath)}: No ensemble stars could be measured.")
                     
             if (i+1) % 10 == 0:
                 print(f"Processed {i+1}/{len(fits_files)} images... ({cache_hits} measurements from cache)")
@@ -417,8 +413,11 @@ def plot_light_curve(results, target_name, output_path, ax=None):
         is_standalone = True
     else:
         fig = ax.figure
-        ax.clear()
+        fig.clear()
+        ax = fig.add_subplot(111)
         is_standalone = False
+    
+    print(f"DEBUG: Plotting light curve with {len(results)} points for '{target_name}'")
     
     times = np.array([r['hjd'] for r in results])
     mags = np.array([r['mag'] for r in results])
@@ -448,7 +447,8 @@ def plot_light_curve(results, target_name, output_path, ax=None):
         ax.errorbar(times_rel[valid_check], check_mags[valid_check], 
                      fmt='o', color='green', alpha=0.6, markersize=4, label='Check Star')
                      
-    ax.invert_yaxis()
+    if not ax.yaxis_inverted():
+        ax.invert_yaxis()
     
     ax.set_title(f"Light Curve: {target_name}")
     ax.set_xlabel(f"HJD - {t0}")

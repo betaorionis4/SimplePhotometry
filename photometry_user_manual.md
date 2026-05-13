@@ -8,7 +8,7 @@ The code can identify stars, perform PSF fitting to extract fluxes (using apertu
 
 Make sure that the code uses the right filter. I use Johnson V and B filters, that are labled 'V_mag' and 'B_mag' by my imaging software - I use N.I.N.A. - in the FITS header.
 
-Since v1.5, Calibra supports automated color transformation calibration using paired B/V images. In v2.0, ensemble time-series photometry with multiple comparison stars and AAVSO-format light curve reporting were added. Version 3.0 introduces a centralized FITS File Manager, integrated Plate Solving via ASTAP, and a unified, logically flowing Analysis & Calibration tab.
+Since v1.5, Calibra supports automated color transformation calibration using paired B/V images. In v2.0, ensemble time-series photometry with multiple comparison stars and AAVSO-format light curve reporting were added. Version 3.0 introduces a centralized FITS File Manager, integrated Plate Solving via ASTAP, and a unified, logically flowing Analysis & Calibration tab. Version 3.1 adds the **Interactive FITS Viewer** with role-based star marking, real-time radial profile analysis, in-viewer aperture tuning, and full bidirectional synchronization between the viewer and the Light Curves pipeline.
 
 Useful background information on the latter and lots of other useful information is provided by the AAVSO Guide to CCD/CMOS Photometry (available for free via aavso.org).
 
@@ -253,16 +253,48 @@ The module produces three files in `photometry_output/`:
 
 ---
 
-## 7. Running the Pipeline: The Configuration GUI (v3.0)
+## 7. Running the Pipeline: The Configuration GUI (v3.1)
 
-Launch the pipeline via `python calibra.py` to open the **Configuration GUI**. In v3.0, the interface is split into a persistent top panel and a set of six processing tabs:
+Launch the pipeline via `python calibra.py` to open the **Configuration GUI**. In v3.1, the interface is split into a persistent top panel and a set of six processing tabs:
 
 ### 7.1 FITS File Manager (Top Panel)
 Always visible at the top of the window, this centralized manager allows you to load, preview, and select your FITS files.
 - **Add Files/Directory**: Load your images.
 - **Preview**: View FITS headers directly in the GUI.
 - **Selection**: Check the boxes next to files to select them for Plate Solving, Calibration, or Analysis.
-- **Interactive Viewer**: Double-click any file in the list to open the integrated FITS Viewer. This allows you to zoom, inspect star details (including sub-pixel centroids and FWHM), and view photometric results directly on the image.
+- **Interactive Viewer**: Double-click any file in the list to open the **Interactive FITS Viewer** (see Section 7.1.1).
+
+#### 7.1.1 Interactive FITS Viewer
+
+The FITS Viewer is a powerful, integrated inspection and configuration tool. It opens as a separate window when you double-click a file in the File Manager.
+
+**Layout**: The viewer consists of a central FITS image canvas flanked by two side panels:
+- **Left Panel**: Live Inspection (click data), Radial Profile plot, and Variable Star info.
+- **Right Panel**: Check & Reference Stars list, and Aperture Settings controls.
+
+**Core Features**:
+
+1.  **Star Inspection (Left-Click)**: Click any star to perform an instant Gaussian PSF fit. The "Live Inspection" panel displays the fitted coordinates (pixel and celestial), FWHM, instrumental magnitude, calibrated magnitude (using the current zero point), and a catalog cross-match if available.
+
+2.  **Real-Time Radial Profile**: Every click also generates a **radial profile plot** showing physical pixel intensities (scatter points) against the Gaussian fit curve. Vertical lines mark the current **aperture radius** (red dashed) and **inner annulus** (green dotted), letting you visually verify whether the aperture captures the full stellar flux and whether the annulus samples clean sky.
+
+3.  **Role-Based Star Marking (Right-Click)**: Right-click a star to open a context menu with options:
+    - **Mark as Variable Star** (Red): Designates the target variable. Only one variable star can be active at a time.
+    - **Mark as Check Star** (Blue): Designates a check/validation star. Only one check star can be active.
+    - **Mark as Reference Star** (Green): Adds the star to the reference ensemble (up to 5).
+    - **Remove Star**: Removes any existing role assignment.
+
+    Marked stars display persistent aperture and annulus overlays in their role color. Roles are mutually exclusive: reassigning a star to a different role automatically removes it from the previous one.
+
+4.  **In-Viewer Aperture Controls**: The "Aperture Settings" panel (bottom-right) shows editable fields for **Aperture Radius**, **Annulus Inner**, and **Annulus Outer**. When "Flexible Aperture" is enabled in Settings, these fields auto-update based on the FWHM of each newly marked star. You can also manually edit these values; subsequent markings will use the updated radii.
+
+5.  **Bidirectional Star Synchronization**:
+    - **Import (automatic)**: When the viewer opens, any stars already configured in the Light Curves tab (target, check, and reference stars) are automatically pre-marked on the image with their correct role colors.
+    - **Export**: Click **"Export Stars to LC Tab"** to push all current viewer markings back into the Light Curves tab. This automatically populates the star names, coordinates, and triggers catalog magnitude lookups (Mag and B-V) without requiring manual "Fetch" clicks.
+
+6.  **Bidirectional Aperture Synchronization**: Click **"Export Aps to Settings"** to write the viewer's current aperture and annulus values back to the main Settings tab, ensuring the pipeline uses the same radii you visually verified.
+
+7.  **Image Display**: The FITS rendering uses `ZScaleInterval` with the display floor set to the image median, producing a dark background with high star contrast. Zoom in/out with the scroll wheel; pan by clicking and dragging.
 
 ### 7.2 Processing Tabs
 1.  **About**: Version information and a summary of Calibra's capabilities.
@@ -286,6 +318,8 @@ Always visible at the top of the window, this centralized manager allows you to 
     - **FITS Sequence Selection**: Glob pattern for a sequence of images.
     - **Ensemble Reference Stars**: Up to 5 comparison stars, resolved via SIMBAD with automatic catalog data retrieval.
     - **Target Star**: The variable star to measure.
+    - **Check Star**: One ensemble star can be designated as a check star for independent validation.
+    - **FITS Viewer Integration**: Stars selected in the Interactive FITS Viewer can be exported directly into the Light Curves tab via the "Export Stars to LC Tab" button, automatically populating names, coordinates, magnitudes, and B-V values.
     - **Generate Light Curve**: Outputs an AAVSO Extended Format report, a detailed CSV, and a light curve plot.
 6.  **Help**: Links to the README and this User Manual.
 
