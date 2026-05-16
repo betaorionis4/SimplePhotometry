@@ -29,7 +29,7 @@ class FITSViewer:
     An interactive FITS image viewer with star inspection, Gaussian fitting,
     and bidirectional data synchronization with the main photometry application.
     """
-    def __init__(self, parent, fits_path, ref_catalog="ATLAS", default_zp=23.399, config=None, initial_stars=None, export_callback=None, aperture_export_callback=None):
+    def __init__(self, parent, fits_path, ref_catalog="ATLAS", default_zp=23.399, config=None, initial_stars=None, aavso_stars=None, export_callback=None, aperture_export_callback=None):
         """
         Initialize the FITS viewer.
 
@@ -40,6 +40,7 @@ class FITSViewer:
             default_zp (float): Default photometric zero point.
             config (dict): Configuration dictionary for aperture/fit parameters.
             initial_stars (dict): Stars to automatically mark on load.
+            aavso_stars (list): List of AAVSO sequence stars for marking.
             export_callback (callable): Function to call when exporting star selections.
             aperture_export_callback (callable): Function to call when exporting aperture settings.
         """
@@ -47,6 +48,7 @@ class FITSViewer:
         self.fits_path = fits_path
         self.ref_catalog = ref_catalog
         self.default_zp = default_zp
+        self.aavso_stars = aavso_stars or []
         self.base_name = os.path.splitext(os.path.basename(fits_path))[0]
         
         # Load FITS Data and WCS header
@@ -262,6 +264,10 @@ class FITSViewer:
         # Load Initial Stars if provided (delayed to ensure UI is ready)
         if self.initial_stars:
             self.parent.after(500, self._auto_mark_initial_stars)
+
+        # Draw AAVSO sequence markers if provided
+        if self.aavso_stars:
+            self.parent.after(800, self._draw_aavso_markers)
         
         # Right-click Context Menu for star role assignment
         self.context_menu = tk.Menu(self.parent, tearoff=0)
@@ -276,6 +282,41 @@ class FITSViewer:
         
         # Cleanup
         self.parent.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def _draw_aavso_markers(self):
+        """
+        Draw yellow circles and AUID labels for all known AAVSO reference stars in the field.
+        """
+        if not self.has_wcs or not self.aavso_stars:
+            return
+            
+        # Determine filter from header to show relevant magnitude
+        header_filt = str(self.header.get('FILTER', 'V')).upper()
+        mag_key = 'V_mag' if 'V' in header_filt else 'B_mag'
+        
+        for star in self.aavso_stars:
+            try:
+                # Project RA/Dec to pixel coordinates
+                sky = SkyCoord(ra=star['ra']*u.deg, dec=star['dec']*u.deg)
+                px, py = self.wcs.world_to_pixel(sky)
+                
+                # Verify if the star is within the visible image bounds
+                ny, nx = self.data.shape
+                if 0 <= px < nx and 0 <= py < ny:
+                    # Draw a distinct yellow circle for sequence stars
+                    circ = patches.Circle((px, py), radius=15, edgecolor='yellow', facecolor='none', linewidth=1.5, alpha=0.7)
+                    self.ax.add_patch(circ)
+                    
+                    # Add text label with AUID and Magnitude
+                    mag = star.get(mag_key, np.nan)
+                    mag_label = f"{mag:.2f}" if not np.isnan(mag) else "na"
+                    label = f"{star['auid']}\n({mag_label})"
+                    self.ax.text(px + 18, py, label, color='yellow', fontsize=8, fontweight='bold', alpha=0.9,
+                                 bbox=dict(facecolor='black', alpha=0.3, edgecolor='none', pad=1))
+            except Exception as e:
+                print(f"Error marking AAVSO star {star.get('auid')}: {e}")
+        
+        self.canvas.draw_idle()
 
     def on_close(self):
         """
@@ -398,7 +439,12 @@ class FITSViewer:
                             v_str = f"{v_mag:.3f}" if isinstance(v_mag, (int, float)) and not np.isnan(v_mag) else "N/A"
                             b_mag = cat_star.get('B_mag')
                             b_str = f"{b_mag:.3f}" if isinstance(b_mag, (int, float)) and not np.isnan(b_mag) else "N/A"
-                            details += f"--- Catalog Comparison ---\n"
+                            
+                            if cat_star.get('source') == 'AAVSO':
+                                details += f"--- AAVSO Identification ---\n"
+                            else:
+                                details += f"--- Catalog Comparison ---\n"
+                                
                             details += f"ID: {cat_star.get('display_name', 'Star')}\n"
                             details += f"Catalog V: {v_str}\n"
                             details += f"Catalog B: {b_str}\n\n"
@@ -505,7 +551,12 @@ class FITSViewer:
             if cat_star:
                 v_mag = cat_star.get('V_mag')
                 v_str = f"{v_mag:.3f}" if isinstance(v_mag, (int, float)) and not np.isnan(v_mag) else "N/A"
-                details += f"--- Catalog Comparison ---\n"
+                
+                if cat_star.get('source') == 'AAVSO':
+                    details += f"--- AAVSO Identification ---\n"
+                else:
+                    details += f"--- Catalog Comparison ---\n"
+                    
                 details += f"ID: {cat_star.get('display_name', 'Star')}\n"
                 details += f"Catalog V: {v_str}\n\n"
                 if cat_star.get('is_variable'):
@@ -524,13 +575,30 @@ class FITSViewer:
     def _query_catalog(self, ra, dec):
         """
         Query online catalogs (ATLAS, APASS, GAIA, VSX) to identify a star.
-        
-        Args:
-            ra, dec (float): J2000 coordinates in degrees.
-            
-        Returns:
-            dict: Star metadata including magnitudes and variability info, or None.
+        Prioritizes the AAVSO sequence stars if available.
         """
+        # 1. Check AAVSO Sequence stars first (High Priority)
+        if self.aavso_stars:
+            click_coord = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
+            for star in self.aavso_stars:
+                star_coord = SkyCoord(ra=star['ra']*u.deg, dec=star['dec']*u.deg)
+                if click_coord.separation(star_coord).arcsec < 4.0:
+                    # Found a match in our AAVSO sequence cache!
+                    # Treat AUID as an alias, but prefer Catalog magnitudes for the comparison
+                    v_mag = star.get('cat_v') if star.get('cat_match') else star.get('V_mag')
+                    b_mag = star.get('cat_b') if star.get('cat_match') else star.get('B_mag')
+                    src = self.ref_catalog if star.get('cat_match') else 'AAVSO'
+                    
+                    return {
+                        'display_name': star['auid'],
+                        'id': star['auid'],
+                        'V_mag': v_mag,
+                        'B_mag': b_mag,
+                        'ra_deg': star['ra'],
+                        'dec_deg': star['dec'],
+                        'source': src
+                    }
+
         if not self.ref_catalog or not any(k in self.ref_catalog.upper() for k in ["ATLAS", "APASS", "GAIA", "LANDOLT"]):
             return None
 

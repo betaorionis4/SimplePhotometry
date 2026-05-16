@@ -1000,9 +1000,13 @@ def run_config_gui(pipeline_callback=None):
                     # Autosave session to disk (Fix)
                     save_session()
 
+                # Pass the AAVSO cache if available
+                aavso_cache = getattr(on_get_aavso_refs, 'cache', None)
+                
                 viewer_win = tk.Toplevel(root)
                 FITSViewer(viewer_win, file_path, ref_catalog=ref_cat, default_zp=def_zp, 
                            config=viewer_config, initial_stars=initial_stars, 
+                           aavso_stars=aavso_cache,
                            export_callback=update_light_curve_stars,
                            aperture_export_callback=update_apertures)
             else:
@@ -1970,18 +1974,17 @@ def run_config_gui(pipeline_callback=None):
             ts_status_var.set(f"Target resolution failed: {e}")
 
     def on_get_aavso_refs():
+        if not hasattr(on_get_aavso_refs, "cache"):
+            on_get_aavso_refs.cache = None
+            on_get_aavso_refs.last_target = ""
+            on_get_aavso_refs.last_cat = ""
+            
         target = ts_target_name_var.get().strip()
+        cat_name = vars_dict["reference_catalog"][0].get()
         if not target:
             messagebox.showwarning("Warning", "Please enter a target star name first.")
             return
             
-        try:
-            radius = float(vars_dict["catalog_search_radius"][0].get())
-        except:
-            radius = 45.0
-            
-        ts_status_var.set(f"Fetching AAVSO sequence for {target}...")
-        root.update_idletasks()
         # Check if we can use cached results
         if (on_get_aavso_refs.cache and 
             on_get_aavso_refs.last_target == target and 
@@ -2216,11 +2219,16 @@ def run_config_gui(pipeline_callback=None):
     ts_status_label = SelectableLabel(ts_container, textvariable=ts_status_var, font=("Arial", 9, "italic"), justify=tk.CENTER)
     ts_status_label.pack(pady=5, fill="x")
     
-    # Progress Bar & Cancel (Phase 3)
     ts_progress_var = tk.DoubleVar(value=0)
     ts_progress = ttk.Progressbar(ts_container, variable=ts_progress_var, maximum=100, length=400)
     ts_progress.pack(pady=5)
     
+    # Analysis Summary Panel (Persistent)
+    lf_ts_summary = tk.LabelFrame(ts_container, text="Analysis Summary")
+    lf_ts_summary.pack(fill="x", padx=10, pady=5)
+    ts_summary_var = tk.StringVar(value="No analysis data yet. Run 'Generate Light Curve' to see results.")
+    tk.Label(lf_ts_summary, textvariable=ts_summary_var, font=("Arial", 10), justify=tk.LEFT, anchor="w", fg="#2c3e50").pack(fill="x", padx=15, pady=10)
+
     cancel_event = threading.Event()
     
     def on_cancel_ts():
@@ -2392,11 +2400,9 @@ def run_config_gui(pipeline_callback=None):
                     avg_check = np.mean(check_mags)
                     std_check = np.std(check_mags)
                     bias = avg_check - check_star_data['mag_std']
-                    check_stats = f"\n\nCheck Star Stats ({check_star_data['name']}):\n"
-                    check_stats += f"Average Bias: {bias:+.3f} (Meas - Cat)\n"
-                    check_stats += f"Precision (1-sigma): {std_check:.3f} mag"
-                    print(check_stats)
-
+                    check_stats = f"Check Star Stats ({check_star_data['name']}):\n"
+                    check_stats += f"Average Bias: {bias:+.3f} (Meas - Cat)  |  Precision (1-sigma): {std_check:.3f} mag"
+                
                 # Update embedded plot
                 plot_title = f"{ts_target_name_var.get()} ({ts_filter_var.get()} Filter)"
                 def update_viz():
@@ -2422,9 +2428,21 @@ def run_config_gui(pipeline_callback=None):
                             r.get('flag', 'OK')
                         ))
                 root.after(0, update_table)
+
+                # Update summary
+                summary_text = f"Target: {ts_target_name_var.get()}  |  Filter: {ts_filter_var.get()}  |  Files: {len(results)}\n"
+                summary_text += f"Saved CSV:    {os.path.abspath(out_csv)}\n"
+                summary_text += f"Saved Plot:   {os.path.abspath(out_plot)}\n"
+                summary_text += f"AAVSO Report: {os.path.abspath(out_aavso)}\n"
+                if check_stats:
+                    summary_text += f"--------------------------------------------------------------------------------\n"
+                    summary_text += check_stats.strip()
                 
-                ts_status_var.set(f"Complete! Results saved to {out_csv}")
-                messagebox.showinfo("Success", f"Light curve generated!\nSaved to: {out_csv}\nPlot: {out_plot}{check_stats}")
+                def update_summary():
+                    ts_summary_var.set(summary_text)
+                root.after(0, update_summary)
+                
+                ts_status_var.set(f"Complete! Results saved.")
             else:
                 ts_status_var.set(f"Failed: {msg}")
 
