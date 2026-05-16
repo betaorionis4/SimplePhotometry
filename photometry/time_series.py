@@ -53,22 +53,34 @@ def save_session_cache():
     except Exception as e:
         print(f"Warning: Could not save photometry cache: {e}")
 
-# Initial load
-load_session_cache()
+def clear_session_cache():
+    """ Wipes all in-memory and on-disk photometry caches for a fresh start. """
+    global _SESSION_PHOT_CACHE, _SESSION_FWHM_CACHE, _SESSION_HEADER_CACHE
+    _SESSION_PHOT_CACHE = {}
+    _SESSION_FWHM_CACHE = {}
+    _SESSION_HEADER_CACHE = {}
+    if os.path.exists(CACHE_FILE):
+        try:
+            os.remove(CACHE_FILE)
+        except:
+            pass
+    print("Photometry cache cleared.")
 
 def get_hjd(time_str, ra, dec, header, site_lat=0.0, site_long=0.0):
     """ Calculates Heliocentric Julian Date (HJD) from DATE-OBS and coordinates. """
     try:
-        # 1. Parse Time
-        # Try different possible header keywords for time
+        # 1. Parse Time & Offset to Mid-Exposure
+        exptime = header.get('EXPTIME', 0.0)
+        t_offset_days = (float(exptime) / 2.0) / 86400.0
+        
         t_val = header.get('JD') or header.get('JD_SOBJ')
         if t_val:
-            t = Time(float(t_val), format='jd', scale='utc')
+            t = Time(float(t_val) + t_offset_days, format='jd', scale='utc')
         else:
             # Fallback to DATE-OBS
             t_str = header.get('DATE-OBS')
             if not t_str: return None
-            t = Time(t_str, format='isot', scale='utc')
+            t = Time(t_str, format='isot', scale='utc') + t_offset_days * u.day
         
         # 2. Get Observer Location
         lon = header.get('SITELONG', site_long)
@@ -227,12 +239,19 @@ def run_time_series_photometry(fits_files, target_ra, target_dec,
                     lat = header.get('SITELAT', site_lat)
                     lon = header.get('SITELONG', site_long)
                     
-                    jd = header.get('JD') or (header.get('MJD') + 2400000.5 if header.get('MJD') else None)
-                    if not jd:
+                    exptime = header.get('EXPTIME', 0.0)
+                    t_offset_days = (float(exptime) / 2.0) / 86400.0
+                    
+                    jd_raw = header.get('JD') or (header.get('MJD') + 2400000.5 if header.get('MJD') else None)
+                    if not jd_raw:
                         t_obs = header.get('DATE-OBS')
                         if t_obs:
-                            try: from astropy.time import Time; jd = Time(t_obs).jd
-                            except: jd = 0
+                            try: from astropy.time import Time; jd_raw = Time(t_obs).jd
+                            except: jd_raw = 0
+                        else:
+                            jd_raw = 0
+                    
+                    jd = jd_raw + t_offset_days
                     
                     airmass = header.get('AIRMASS', 1.0)
                     hjd = get_hjd(None, target_ra, target_dec, header, lat, lon) or jd
@@ -240,6 +259,7 @@ def run_time_series_photometry(fits_files, target_ra, target_dec,
                     _SESSION_HEADER_CACHE[fpath] = {
                         'jd': jd, 'airmass': airmass, 'lat': lat, 'lon': lon,
                         'JD': header.get('JD'), 'DATE-OBS': header.get('DATE-OBS'),
+                        'EXPTIME': header.get('EXPTIME', 0.0),
                         'SITELONG': header.get('SITELONG'), 'SITELAT': header.get('SITELAT'), 'SITEELEV': header.get('SITEELEV')
                     }
                     
@@ -347,7 +367,8 @@ def run_time_series_photometry(fits_files, target_ra, target_dec,
                 if not ensemble_res: print(f"  - {os.path.basename(fpath)}: No ensemble stars could be measured.")
                     
             if (i+1) % 10 == 0:
-                print(f"Processed {i+1}/{len(fits_files)} images... ({cache_hits} measurements from cache)")
+                cache_msg = f" ({cache_hits} star measurements retrieved from session cache)" if cache_hits > 0 else ""
+                print(f"Processed {i+1}/{len(fits_files)} images...{cache_msg}")
                 
         except Exception as e:
             print(f"Skipping {fpath}: {e}")
@@ -417,7 +438,7 @@ def plot_light_curve(results, target_name, output_path, ax=None):
         ax = fig.add_subplot(111)
         is_standalone = False
     
-    print(f"DEBUG: Plotting light curve with {len(results)} points for '{target_name}'")
+    # print(f"DEBUG: Plotting light curve with {len(results)} points for '{target_name}'")
     
     times = np.array([r['hjd'] for r in results])
     mags = np.array([r['mag'] for r in results])
