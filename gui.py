@@ -68,8 +68,9 @@ def run_config_gui(pipeline_callback=None):
     Launches a persistent Tkinter GUI for pipeline configuration.
     pipeline_callback: A function that takes (config) and runs the analysis.
     """
+    APP_VERSION = "3.1"
     root = tk.Tk()
-    root.title("Calibra v3.1")
+    root.title(f"Calibra v{APP_VERSION}")
     root.geometry("1100x750")
     root.minsize(950, 650)
     root.resizable(True, True)
@@ -129,6 +130,12 @@ def run_config_gui(pipeline_callback=None):
     vars_dict = {}    # Global-like storage for variable access
     ts_widgets = {}   # Shared widgets for dynamic updates (e.g., filter dropdown)
     
+    # Initialize global observer variables early to avoid KeyErrors in tabs
+    aavso_obs_var = tk.StringVar(value="XXXX")
+    vars_dict["aavso_obs_code"] = (aavso_obs_var, str)
+    obs_name_var = tk.StringVar(value="Calibra User")
+    vars_dict["observer_name"] = (obs_name_var, str)
+    
     # --- MAIN LAYOUT STRUCTURE ---
     # 1. Bottom Bar (Locked to bottom)
     btn_frame = tk.Frame(root, bg="#f0f2f5")
@@ -178,13 +185,16 @@ def run_config_gui(pipeline_callback=None):
 
     def add_entry(parent, label_text, var_name, default_val, row, col_offset=0, vtype=float, width=15):
         ttk.Label(parent, text=label_text).grid(row=row, column=col_offset*2, sticky=tk.W, padx=10, pady=5)
-        if vtype == str:
-            var = tk.StringVar(value=str(default_val))
-        elif vtype == int:
-            var = tk.IntVar(value=int(default_val))
+        if var_name in vars_dict:
+            var = vars_dict[var_name][0]
         else:
-            var = tk.DoubleVar(value=float(default_val))
-        vars_dict[var_name] = (var, vtype)
+            if vtype == str:
+                var = tk.StringVar(value=str(default_val))
+            elif vtype == int:
+                var = tk.IntVar(value=int(default_val))
+            else:
+                var = tk.DoubleVar(value=float(default_val))
+            vars_dict[var_name] = (var, vtype)
         ttk.Entry(parent, textvariable=var, width=width).grid(row=row, column=col_offset*2+1, sticky=tk.W, padx=10, pady=5)
         return var
 
@@ -2167,30 +2177,35 @@ def run_config_gui(pipeline_callback=None):
     # Coefficients
     # Moved to packing section above
     
-    tk.Label(lf_ts_coeff, text="Color Term (e.g. Tv_bv):").grid(row=0, column=0, sticky=tk.W, padx=10, pady=2)
+    # Coefficients & Metadata
+    ts_do_trans_var = tk.BooleanVar(value=False)
+    vars_dict["ts_do_trans"] = (ts_do_trans_var, bool)
+    ttk.Checkbutton(lf_ts_coeff, text="Apply Color Transformation (Set TRANS=YES in report)", variable=ts_do_trans_var).grid(row=0, column=0, columnspan=4, sticky=tk.W, padx=10, pady=5)
+
+    tk.Label(lf_ts_coeff, text="Color Term (e.g. Tv_bv):").grid(row=1, column=0, sticky=tk.W, padx=10, pady=2)
     ts_coeff_var = tk.DoubleVar(value=0.0)
     vars_dict["ts_coeff"] = (ts_coeff_var, float)
-    ttk.Entry(lf_ts_coeff, textvariable=ts_coeff_var, width=10).grid(row=0, column=1, sticky=tk.W, padx=2)
+    ttk.Entry(lf_ts_coeff, textvariable=ts_coeff_var, width=10).grid(row=1, column=1, sticky=tk.W, padx=2)
     
-    tk.Label(lf_ts_coeff, text="Extinction (k):").grid(row=0, column=2, sticky=tk.W, padx=10, pady=2)
+    tk.Label(lf_ts_coeff, text="Extinction (k):").grid(row=1, column=2, sticky=tk.W, padx=10, pady=2)
     ts_k_var = tk.DoubleVar(value=0.15)
     vars_dict["ts_k"] = (ts_k_var, float)
-    ttk.Entry(lf_ts_coeff, textvariable=ts_k_var, width=10).grid(row=0, column=3, sticky=tk.W, padx=2)
+    ttk.Entry(lf_ts_coeff, textvariable=ts_k_var, width=10).grid(row=1, column=3, sticky=tk.W, padx=2)
     
-    tk.Label(lf_ts_coeff, text="AAVSO Observer Code:").grid(row=1, column=0, sticky=tk.W, padx=10, pady=2)
-    ts_obs_var = tk.StringVar(value="XXXX")
-    vars_dict["ts_obs_code"] = (ts_obs_var, str)
-    ttk.Entry(lf_ts_coeff, textvariable=ts_obs_var, width=10).grid(row=1, column=1, sticky=tk.W, padx=2)
+    tk.Label(lf_ts_coeff, text="AAVSO Observer Code:").grid(row=2, column=0, sticky=tk.W, padx=10, pady=2)
+    # Linked to global settings
+    ts_obs_var = vars_dict["aavso_obs_code"][0]
+    ttk.Entry(lf_ts_coeff, textvariable=ts_obs_var, width=10).grid(row=2, column=1, sticky=tk.W, padx=2)
     
-    tk.Label(lf_ts_coeff, text="Site Lat:").grid(row=1, column=2, sticky=tk.W, padx=10, pady=2)
+    tk.Label(lf_ts_coeff, text="Site Lat:").grid(row=2, column=2, sticky=tk.W, padx=10, pady=2)
     ts_lat_var = tk.DoubleVar(value=59.8)
     vars_dict["ts_lat"] = (ts_lat_var, float)
-    ttk.Entry(lf_ts_coeff, textvariable=ts_lat_var, width=10).grid(row=1, column=3, sticky=tk.W, padx=2)
+    ttk.Entry(lf_ts_coeff, textvariable=ts_lat_var, width=10).grid(row=2, column=3, sticky=tk.W, padx=2)
     
-    tk.Label(lf_ts_coeff, text="Site Long:").grid(row=2, column=0, sticky=tk.W, padx=10, pady=2)
+    tk.Label(lf_ts_coeff, text="Site Long:").grid(row=3, column=0, sticky=tk.W, padx=10, pady=2)
     ts_lon_var = tk.DoubleVar(value=17.6)
     vars_dict["ts_lon"] = (ts_lon_var, float)
-    ttk.Entry(lf_ts_coeff, textvariable=ts_lon_var, width=10).grid(row=2, column=1, sticky=tk.W, padx=2)
+    ttk.Entry(lf_ts_coeff, textvariable=ts_lon_var, width=10).grid(row=3, column=1, sticky=tk.W, padx=2)
 
     def load_ts_coefficients():
         import json
@@ -2213,7 +2228,7 @@ def run_config_gui(pipeline_callback=None):
         else:
             ts_status_var.set("No coefficients file found.")
             
-    tk.Button(lf_ts_coeff, text="Load Last Coeffs", command=load_ts_coefficients).grid(row=2, column=2, columnspan=2, pady=5)
+    tk.Button(lf_ts_coeff, text="Load Last Coeffs", command=load_ts_coefficients).grid(row=4, column=0, columnspan=4, pady=5)
 
     ts_status_var = tk.StringVar(value="Ready to process sequence.")
     ts_status_label = SelectableLabel(ts_container, textvariable=ts_status_var, font=("Arial", 9, "italic"), justify=tk.CENTER)
@@ -2346,14 +2361,15 @@ def run_config_gui(pipeline_callback=None):
                 root.after(0, lambda: ts_progress_var.set(val))
 
             results, msg = run_time_series_photometry(
-                files, tar_c.ra.deg, tar_c.dec.deg, 
-                resolved_ensemble,
-                check_star_data,
-                ts_target_bv_var.get(),
-                ts_coeff_var.get(), 0.0, # epsilon not used yet
-                float(vars_dict["aperture_radius"][0].get()),
-                float(vars_dict["annulus_inner"][0].get()),
-                float(vars_dict["annulus_outer"][0].get()),
+                files, target_ra=tar_c.ra.deg, target_dec=tar_c.dec.deg,
+                ensemble_stars=resolved_ensemble,
+                check_star=check_star_data,
+                target_bv=ts_target_bv_var.get(),
+                coeff_term=ts_coeff_var.get() if ts_do_trans_var.get() else 0.0,
+                coeff_color=0.0, # Not used in current simplified model
+                aperture_radius=float(vars_dict["aperture_radius"][0].get()),
+                annulus_inner=float(vars_dict["annulus_inner"][0].get()),
+                annulus_outer=float(vars_dict["annulus_outer"][0].get()),
                 gain=float(vars_dict["ccd_gain"][0].get()),
                 k_coeff=ts_k_var.get(),
                 filter_name=ts_filter_var.get(),
@@ -2386,12 +2402,24 @@ def run_config_gui(pipeline_callback=None):
                 comp_mag = "na" if len(resolved_ensemble) > 1 else resolved_ensemble[0]['mag_std']
                 check_name = check_star_data['name'] if check_star_data else "na"
                 check_mag = check_star_data['mag_std'] if check_star_data else "na"
-                is_trans = "YES" if abs(ts_coeff_var.get()) > 1e-5 else "NO"
+                is_trans = "YES" if ts_do_trans_var.get() and abs(ts_coeff_var.get()) > 1e-5 else "NO"
+                
+                # Construct header comments (Fix)
+                cat_name = vars_dict.get("reference_catalog", (tk.StringVar(value="na"), None))[0].get()
+                report_comments = f"RefCat: {cat_name}"
+                if is_trans == "YES":
+                    report_comments += " | Transformed to Johnson-Cousins"
+                
+                # Construct observation notes (Ensemble details)
+                ens_names = " ".join([s['name'] for s in resolved_ensemble])
+                report_notes = f"Ensemble of {len(resolved_ensemble)}: {ens_names}"
                 
                 save_aavso_report(results, out_aavso, ts_target_name_var.get(), ts_filter_var.get(), ts_obs_var.get(),
                                   comp_name=comp_name, comp_mag=comp_mag, 
                                   check_name=check_name, check_mag=check_mag,
-                                  trans=is_trans)
+                                  trans=is_trans, software_version=APP_VERSION,
+                                  comments=report_comments,
+                                  notes=report_notes)
                 
                 # Calculate Check Star Stats if available
                 check_stats = ""
@@ -2457,6 +2485,48 @@ def run_config_gui(pipeline_callback=None):
     ts_btn_frame = ttk.Frame(ts_container)
     ts_btn_frame.pack(pady=10)
 
+    def on_open_report():
+        target_name = ts_target_name_var.get().replace(' ','_')
+        report_path = os.path.abspath(os.path.join("photometry_output", f"aavso_{target_name}.txt"))
+        if os.path.exists(report_path):
+            try:
+                if sys.platform == 'win32':
+                    os.startfile(report_path)
+                elif sys.platform == 'darwin':
+                    import subprocess
+                    subprocess.call(['open', report_path])
+                else:
+                    import subprocess
+                    subprocess.call(['xdg-open', report_path])
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not open report file: {e}")
+        else:
+            messagebox.showwarning("Not Found", f"No report file found at:\n{report_path}\n\nPlease generate a light curve first.")
+
+    def on_reset_ensemble():
+        if messagebox.askyesno("Reset Ensemble", "Are you sure you want to clear all selected reference stars and the check star?"):
+            # Clear all TS ref vars
+            for i in range(1, 11):
+                vars_dict[f"ts_ref_{i}_use"][0].set(False)
+                vars_dict[f"ts_ref_{i}_name"][0].set("")
+                vars_dict[f"ts_ref_{i}_mag"][0].set(0.0)
+                vars_dict[f"ts_ref_{i}_bv"][0].set(0.0)
+                vars_dict[f"ts_ref_{i}_ra"][0].set(0.0)
+                vars_dict[f"ts_ref_{i}_dec"][0].set(0.0)
+            
+            # Clear check star
+            vars_dict["ts_check_use"][0].set(False)
+            vars_dict["ts_check_name"][0].set("")
+            vars_dict["ts_check_mag"][0].set(0.0)
+            vars_dict["ts_check_bv"][0].set(0.0)
+            vars_dict["ts_check_ra"][0].set(0.0)
+            vars_dict["ts_check_dec"][0].set(0.0)
+            
+            # Reset target defaults if needed
+            ts_target_name_var.set("Target")
+            
+            messagebox.showinfo("Reset Complete", "Ensemble and check star configuration has been cleared.")
+
     run_ts_btn = tk.Button(ts_btn_frame, text="Generate Light Curve", command=on_run_ts,
                            bg="#00796b", fg="white", font=("Arial", 11, "bold"), pady=10, width=25)
     run_ts_btn.pack(side=tk.LEFT, padx=10)
@@ -2464,6 +2534,14 @@ def run_config_gui(pipeline_callback=None):
     clear_cache_btn = tk.Button(ts_btn_frame, text="Clear Photometry Cache", command=on_clear_cache,
                                 bg="#f57c00", fg="white", font=("Arial", 9), pady=10)
     clear_cache_btn.pack(side=tk.LEFT, padx=10)
+
+    open_report_btn = tk.Button(ts_btn_frame, text="Open AAVSO Report", command=on_open_report,
+                                bg="#43a047", fg="white", font=("Arial", 9, "bold"), pady=10)
+    open_report_btn.pack(side=tk.LEFT, padx=10)
+
+    reset_ens_btn = tk.Button(ts_btn_frame, text="Reset Ensemble", command=on_reset_ensemble,
+                              bg="#757575", fg="white", font=("Arial", 9), pady=10)
+    reset_ens_btn.pack(side=tk.LEFT, padx=10)
 
     # 5. Graph
     lf_ts_plot.pack(fill="both", expand=True, padx=10, pady=5)
@@ -2548,6 +2626,12 @@ def run_config_gui(pipeline_callback=None):
     lf_ext.pack(fill="x", padx=10, pady=10)
     add_entry(lf_ext, "k_V (Visual):", "extinction_kv", 0.20, 0)
     add_entry(lf_ext, "k_B (Blue):", "extinction_kb", 0.35, 1)
+
+    # Observer Information (Global)
+    lf_obs = tk.LabelFrame(tab_settings, text="Observer Information")
+    lf_obs.pack(fill="x", padx=10, pady=10)
+    add_entry(lf_obs, "AAVSO Observer Code (4 chars):", "aavso_obs_code", "XXXX", 0, vtype=str)
+    add_entry(lf_obs, "Observer Name (Report Header):", "observer_name", "Calibra User", 1, vtype=str)
 
 
     # Output Toggles (from old TAB 4)

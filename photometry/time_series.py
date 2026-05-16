@@ -404,22 +404,37 @@ def run_time_series_photometry(fits_files, target_ra, target_dec,
 
 def save_aavso_report(results, output_path, target_name, filter_name, obs_code, 
                       comp_name="ENSEMBLE", comp_mag="na", check_name="na", check_mag="na",
-                      trans="NO"):
+                      trans="NO", software_version="2.0", comments="na", notes="na"):
     """ Generates a report in AAVSO Extended Format. """
     try:
+        def fmt_mag(val, precision=3):
+            if isinstance(val, (int, float)) and not np.isnan(val):
+                return f"{val:.{precision}f}"
+            return str(val)
+
         with open(output_path, 'w', newline='') as f:
             f.write("#TYPE=Extended\n")
             f.write(f"#OBSCODE={obs_code}\n")
-            f.write(f"#SOFTWARE=Calibra 2.0\n")
+            f.write(f"#SOFTWARE=Calibra {software_version}\n")
             f.write(f"#DELIM=,\n")
             f.write(f"#DATE=HJD\n")
             f.write(f"#OBSTYPE=CCD\n")
             f.write(f"#TRANS={trans}\n")
-            f.write("NAME,DATE,MAG,MERR,FILT,TRANS,MTYPE,CNAME,CMAG,KNAME,KMAG,AMASS,NOTES\n")
+            f.write(f"#COMMENTS={comments}\n")
+            f.write("NAME,DATE,MAG,MERR,FILT,TRANS,MTYPE,CNAME,CMAG,KNAME,KMAG,AMASS,GROUP,CHART,NOTES\n")
             
             for r in results:
-                # Format: Name, Date, Mag, Merr, Filt, Trans, Mtype, Cname, Cmag, Kname, Kmag, Amass, Notes
-                f.write(f"{target_name},{r['hjd']:.6f},{r['mag']:.4f},{r['mag_err']:.4f},{filter_name},{trans},STD,{comp_name},{comp_mag},{check_name},{check_mag},{r['airmass']:.3f},na\n")
+                # Format: Name, Date, Mag, Merr, Filt, Trans, Mtype, Cname, Cmag, Kname, Kmag, Amass, Group, Chart, Notes
+                # Date: 5 digits, Mag: 3 digits, Merr: 4 digits
+                mag_str = f"{r['mag']:.3f}"
+                err_str = f"{r['mag_err']:.4f}"
+                date_str = f"{r['hjd']:.5f}"
+                c_mag_str = fmt_mag(comp_mag, 3)
+                k_mag_str = fmt_mag(check_mag, 3)
+                
+                line = f"{target_name},{date_str},{mag_str},{err_str},{filter_name},{trans},STD,"
+                line += f"{comp_name},{c_mag_str},{check_name},{k_mag_str},{r['airmass']:.3f},na,na,{notes}\n"
+                f.write(line)
         return True
     except Exception as e:
         print(f"Error saving AAVSO report: {e}")
